@@ -2,6 +2,14 @@
 
 Guidance for AI coding agents working in this repository.
 
+> **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
+> `CHANGELOG` entry format, CI version pinning and entry commands, the test entry command, and
+> the runtime ignore list are defined once in the machine-wide `STANDARD.md` (outside this
+> repository) and are not restated here.
+>
+> **Push over SSH, never HTTPS.** Verify `git remote get-url --push origin` starts with `git@`
+> before pushing; if it starts with `https://`, fix it first — never push over HTTPS.
+
 ## What this is
 
 A **passive** usage tracker for Qoder CN: it parses the session transcripts Qoder
@@ -170,6 +178,24 @@ missing package, not a Python-version failure — do not read it as one.
   every name derived from `db.ENV_NAMES`.
 - Commit messages are **English** and follow Conventional Commits
   (`feat:` / `fix:` / `docs:` / `chore:`), code before docs.
+
+## Recording conventions
+
+- **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
+  feature is the product, not a droppable deviation — features are documented in the READMEs. The
+  exclusion is one regex over the commit subject inside the check; it must not decay into a
+  per-commit skip flag.
+- `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore`, cut by **who may demand a
+  revert**: bug → `fix`; measurable degradation only → `perf`; only my taste → `taste` (zero
+  obligation, discardable on an upgrade); no behaviour change, detects drift → `guard`; withdraws
+  earlier work → `revert`; cleanup owed nothing either way → `chore`.
+- **An empty covered window is legal only when the header says so.** If the window contains covered
+  commits but the record has no entries, the check fails: a pass over an empty set proves nothing.
+- `Symptom` names the mechanism, never the session: no prompt text, no command lines, no tool
+  argument values, no real paths from `~/.qoder-cn`. The record is held to the same
+  metadata-not-content rule as the code.
+- Run the coverage check before committing production code:
+  `python3 -m unittest scripts.tests.test_record_coverage`. It is part of the suite.
 
 ## Version
 

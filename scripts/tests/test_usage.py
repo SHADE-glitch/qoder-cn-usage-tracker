@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from _helpers import SCRIPTS, TempTree
 
 import qcut_db as db
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 
 def ms_on(days_ago=0, hour=12):

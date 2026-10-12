@@ -30,6 +30,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 # Same convention as the other suites: the start directory of discovery on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))

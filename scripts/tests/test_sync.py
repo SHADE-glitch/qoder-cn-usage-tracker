@@ -10,6 +10,7 @@ import json
 import unittest
 
 from _helpers import TempTree, assistant, tool_result, tool_use, usage
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 
 class ModelCallTest(unittest.TestCase):

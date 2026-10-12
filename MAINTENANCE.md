@@ -1,7 +1,7 @@
 # MAINTENANCE.md — qoder-cn-usage-tracker
 
 Procedure file. This is a **router**: the long-form maintenance assets live under
-[`docs/maintenance/`](docs/maintenance/), and the rules for working in this repository live in
+[`docs/maintenance/README.md`](docs/maintenance/README.md), and the rules for working in this repository live in
 [`AGENTS.md`](AGENTS.md). Do not duplicate their tables here — a duplicated fact is the thing that
 drifts.
 
@@ -53,6 +53,7 @@ floor and the highest version measured green here. It is not the interpreter you
 | Document | Read it when |
 |---|---|
 | [`qoder-format.md`](docs/maintenance/qoder-format.md) | Qoder shipped a new version, or a panel shows nothing it used to show |
+| [`compatibility.md`](docs/maintenance/compatibility.md) | Choosing what to claim is supported, or a version string needs updating |
 | [`baseline.md`](docs/maintenance/baseline.md) | Restating a size, a timing, a row count, or the route split |
 
 Both carry numbers measured on one machine on one day. The transcript tree is live and grows during

@@ -18,6 +18,7 @@ from _helpers import (SCRIPTS, TempTree, assistant, now_iso, tool_result,
                       tool_use, usage)
 
 import qcut_db as db
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 
 def load_tui(name="qcut_tui_test"):

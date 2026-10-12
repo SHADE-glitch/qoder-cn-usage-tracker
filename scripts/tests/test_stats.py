@@ -47,6 +47,7 @@ from pathlib import Path
 from _helpers import SCRIPTS, TempTree
 
 import qcut_db as db
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 _spec = importlib.util.spec_from_file_location(
     "qcut_stats_under_test", str(SCRIPTS / "qcut-stats.py"))

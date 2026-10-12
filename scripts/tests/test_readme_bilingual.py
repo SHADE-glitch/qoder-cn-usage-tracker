@@ -34,6 +34,7 @@ import re
 import unittest
 from pathlib import Path
 import sys
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 # Same convention as the other suites: the start directory of discovery, so the
 # module imports identically whether it is loaded by name or by path.

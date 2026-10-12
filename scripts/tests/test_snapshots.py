@@ -38,6 +38,7 @@ from pathlib import Path
 from _helpers import TempTree, assistant, tool_result, tool_use, usage
 
 import qcut_db as db
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 TRANSCRIPT = "projects/-work-demo/s1.jsonl"
 

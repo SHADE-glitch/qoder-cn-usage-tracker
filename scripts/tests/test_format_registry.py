@@ -32,6 +32,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 import qcut_db as db  # noqa: E402
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 SYNC_PATH = SCRIPTS / "qcut-sync.py"
 _spec = importlib.util.spec_from_file_location("qcut_sync_registry_test", str(SYNC_PATH))

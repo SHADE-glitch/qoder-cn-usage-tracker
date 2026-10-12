@@ -20,6 +20,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"

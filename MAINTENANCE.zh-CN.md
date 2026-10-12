@@ -1,7 +1,7 @@
 # MAINTENANCE.zh-CN.md — qoder-cn-usage-tracker
 
 流程文件。这是一份**路由表**：长文维护资产放在
-[`docs/maintenance/`](docs/maintenance/) 下，仓库内的工作规则放在
+[`docs/maintenance/README.md`](docs/maintenance/README.md) 下，仓库内的工作规则放在
 [`AGENTS.md`](AGENTS.md)。不要在这里复制它们的表格——被复制的那份事实才是会漂移的东西。
 
 唯一真正要紧的维护风险：**Qoder 改了转录格式**。字段改名会被读成 `NULL`，记录类型改名会静默地
@@ -45,6 +45,7 @@ QCUT_DB=/tmp/qcut-check.db qcut models                 # 按路由的积分/toke
 | 文档 | 什么时候读 |
 |---|---|
 | [`qoder-format.md`](docs/maintenance/qoder-format.md) | Qoder 发了新版本，或某个面板不再显示它以前显示的东西 |
+| [`compatibility.md`](docs/maintenance/compatibility.md) | 要决定声明支持什么，或某个版本号需要更新时 |
 | [`baseline.md`](docs/maintenance/baseline.md) | 要重述某个体积、耗时、行数，或路由分布时 |
 
 两份文档里的数字都是**一台机器、某一天**量出来的。转录目录树是活的，就在你测量它的这次会话里继续

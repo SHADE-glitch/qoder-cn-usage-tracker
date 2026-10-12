@@ -20,6 +20,7 @@ from pathlib import Path
 from _helpers import SCRIPTS, TempTree, assistant, tool_use, usage
 
 import qcut_db as db
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 PRODUCTION_SCRIPTS = ("qcut_db.py", "qcut-sync.py", "qcut-stats.py", "qcut-tui.py")
 

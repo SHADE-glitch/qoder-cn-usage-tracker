@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 REPO = Path(__file__).resolve().parent.parent.parent
 QCUT = REPO / "bin" / "qcut"

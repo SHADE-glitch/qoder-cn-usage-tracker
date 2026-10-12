@@ -18,6 +18,7 @@ from pathlib import Path
 from _helpers import SCRIPTS
 
 import qcut_db as db
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 ENV_NAMES = tuple(db.ENV_NAMES.values()) + ("QCUT_CONFIG", "QCUT_DB", "QCUT_QODER_DIR")
 
