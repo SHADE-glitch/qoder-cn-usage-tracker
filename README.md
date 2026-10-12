@@ -241,7 +241,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 165 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 262 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -253,12 +253,20 @@ this repository reaches the network.
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 39 | transcript parsing, classification (tool / skill / agent / MCP), route origin, inventory, incremental and full re-sync, timestamped-status pairing, unparsed accounting, crash safety |
-| `test_usage.py` | 53 | the calendar-day windows, cache hit rate, every query helper, the "installed ∪ used" union, the one token/credits reporting predicate and its SQL↔Python mirror, schemas, snapshots and restore, a fresh install with no database yet, and the headless reports' wording |
+| `test_sync.py` | 43 | transcript parsing, classification (tool / skill / agent / MCP), route origin, inventory, incremental and full re-sync, timestamped-status pairing, unparsed accounting, idempotency across **every** table in the schema, crash safety |
+| `test_usage.py` | 53 | the calendar-day windows, cache hit rate, every query helper, the "installed ∪ used" union, the one token/credits reporting predicate and its SQL↔Python mirror, schemas, the minimal snapshot→list→restore round trip, a fresh install with no database yet, and the headless reports' wording |
+| `test_stats.py` | 32 | the headless CLI end to end: real `main([...])` calls for every subcommand, `--db` and `--limit`, the read-only connection, the stale-index refusal, `export` / `inventory` / `recent` / `show` / `health`, the `backup`/`restore` pair, and the launcher refusing to touch a path it was not given |
+| `test_snapshots.py` | 13 | the destructive step's way back: the snapshot is taken *before* the change, it is an online backup rather than a byte copy of a file whose committed rows are still in the `-wal`, a restore keeps the state it overwrote, and retention prunes only what it made |
 | `test_config.py` | 16 | the settings layer: defaults, file, environment precedence and bounds, a broken file that names its path, and the keys `qcut health` prints |
 | `test_privacy.py` | 9 | an import allowlist over the production scripts, a fingerprint proving the source tree is untouched, a sentinel scan across every text column, and a positive control |
-| `test_tui.py` | 39 | tab wiring through Textual's own `run_test` harness, per-tab ranges, the Plugins tab's missing window, the column plan, empty states, drill-down, the `—`/`-`/number distinction on both measure axes, and a status line that is *on screen* rather than merely holding text |
+| `test_tui.py` | 41 | tab wiring through Textual's own `run_test` harness, per-tab ranges, the Plugins tab's missing window, the column plan, empty states, drill-down, the `—`/`-`/number distinction on both measure axes, the plain tab titles and the
+| default canvas colour, and a status line that is *on screen* rather than merely holding text |
 | `test_dispatcher.py` | 9 | `bin/qcut` routing, flag pass-through, and the failure modes that are the reason it is bash |
+| `test_format_registry.py` | 10 | an AST mirror of the format registry against the parser beside it: every field read is registered, every registered field is still read, the dispatch chain and the registry claim the same record types, and no separator, path segment or tool name is typed at a call site |
+| `test_maintenance_docs.py` | 10 | the generated format document equals what `qcut format` prints today, every maintenance asset is reachable from the router, every link resolves, and the CI matrix pins the floor `pyproject.toml` actually declares |
+| `test_readme_counts.py` | 6 | every count in either README — each row and each total — equals the number read off the suites' syntax trees, and a suite on disk with no row fails as hard as a row pointing at a deleted file |
+| `test_readme_bilingual.py` | 7 | the two READMEs are one document in two languages: the same heading-marker sequence in the same order, so a section added, dropped *or moved* on one side alone goes red, and every in-page link resolves to a real heading |
+| `test_record_coverage.py` | 13 | a commit that touches a production script must leave a `CHANGELOG.md` bullet of the matching kind; the window is enumerated from `git log` rather than typed, and a window with nothing covered in it skips instead of reporting a pass |
 
 GitHub Actions runs that same discovery command on every push and pull request
 against **Python 3.11 and 3.14** — the floor `pyproject.toml` declares and the
@@ -275,7 +283,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 165 tests above |
+| `scripts/tests/` | the 262 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

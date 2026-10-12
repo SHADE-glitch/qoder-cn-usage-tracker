@@ -1,7 +1,7 @@
 # Size & performance baseline
 
 Every number here was measured on the machine this tool was written on (Ubuntu,
-Qoder CN agent version `1.1.57`), on **2026-10-12 at 21:05 local**.
+Qoder CN agent version `1.1.57`), on **2026-10-12 at 22:34 local**.
 
 The source tree is live: it is the transcript directory of the agent the owner is
 working with, so it grows between two `find` calls in the same minute. These
@@ -11,14 +11,14 @@ any of them; a stale baseline is worse than none, because it reads as a guarante
 ## The source
 
 ```bash
-find ~/.qoder-cn/projects -name '*.jsonl' | wc -l     # 173
-du -sh ~/.qoder-cn/projects                           # 362M
-find ~/.qoder-cn/projects -name 'agent-a*.jsonl' | wc -l   # 133
+find ~/.qoder-cn/projects -name '*.jsonl' | wc -l     # 176
+du -sh ~/.qoder-cn/projects                           # 370M
+find ~/.qoder-cn/projects -name 'agent-a*.jsonl' | wc -l   # 136
 ```
 
-Of those 173 files, **133 are subagent transcripts** named
+Of those 176 files, **136 are subagent transcripts** named
 `agent-a<Type>-<hash>.jsonl` whose records carry the *parent* session id. That is
-why 173 files yield 39 sessions, not 173.
+why 176 files yield 39 sessions, not 176.
 
 ## A cold sync
 
@@ -32,8 +32,8 @@ Timed with `/usr/bin/time -f '%e s %M KB peak'` on `python3 scripts/qcut-sync.py
 
 | | |
 |---|---|
-| cold (full parse of 362 MB) | **5.17 s**, 133,292 KB peak RSS |
-| warm (nothing new) | **0.10 s**, 20,712 KB peak RSS |
+| cold (full parse of 370 MB) | **4.76 s**, 133,732 KB peak RSS |
+| warm (nothing new) | **0.12 s**, 20,132 KB peak RSS |
 | database | **19 MB** |
 
 Warm is fast because each file remembers a byte offset in `sync_state` and is
@@ -48,20 +48,20 @@ qcut health
 | table | rows |
 |---|---:|
 | `sessions` | 39 |
-| `model_calls` | 29,628 |
-| `tool_calls` | 33,547 |
+| `model_calls` | 30,478 |
+| `tool_calls` | 34,432 |
 | `skill_usage` | 2 |
-| `agent_usage` | 133 |
+| `agent_usage` | 136 |
 | `mcp_usage` | 10 |
 | `plugin_usage` | 1 |
 | `commands` | 2 |
-| `inventory` | 62 |
-| `sync_state` | 173 |
+| `inventory` | 35 |
+| `sync_state` | 176 |
 | `unparsed` | 1 reason, 6 lines |
 
-`model_calls` is 29,628 of the 68,733 `assistant` records on disk: the rest carry
+`model_calls` is 30,478 of the 70,587 `assistant` records on disk: the rest carry
 no `message.usage` and are not model responses. Every `message.id` among the
-29,628 is unique, which is what makes it the primary key.
+30,478 is unique, which is what makes it the primary key.
 
 The 6 `unparsed` lines are `unparseable_line` — JSON that did not parse at all.
 No record *type* is unclaimed: a renamed type would show up here as a new reason,
@@ -75,7 +75,7 @@ qcut models
 
 | model | provider | requests | tokens | credits |
 |---|---|---:|---|---|
-| `qfmodel` | builtin | 27,560 | `—` (all four fields report 0) | 17,262.33 |
+| `qfmodel` | builtin | 28,410 | `—` (all four fields report 0) | 17,700.03 |
 | `qmodel_38max` | builtin | 1,985 | `—` | 5,932.63 |
 | `qmodel` | builtin | 11 | `—` | 6.78 |
 | `auto` | builtin | 1 | `—` | 1.31 |
@@ -84,7 +84,7 @@ qcut models
 This is the clearest statement of the split, and it is a **complementary** one,
 not a missing one:
 
-- 29,557 responses on Qoder's own routes carry a real credit and a **literal `0`**
+- 30,407 responses on Qoder's own routes carry a real credit and a **literal `0`**
   in every token field.
 - 71 responses on the BYOK route carry real tokens and **no `credits` field at
   all**, which is stored NULL.
@@ -101,19 +101,19 @@ in credits, are the same mistake in opposite directions.
 
 | tool | calls | failed |
 |---|---:|---:|
-| `Bash` | 18,824 | 623 |
-| `Edit` | 6,860 | 379 |
-| `Read` | 4,611 | 13 |
-| `Write` | 934 | 40 |
-| `Grep` | 766 | 3 |
-| `TaskUpdate` | 675 | 0 |
-| `TaskCreate` | 479 | 0 |
-| `Agent` | 133 | 3 |
+| `Bash` | 19,311 | 642 |
+| `Edit` | 7,094 | 393 |
+| `Read` | 4,718 | 13 |
+| `Write` | 958 | 40 |
+| `Grep` | 774 | 3 |
+| `TaskUpdate` | 687 | 0 |
+| `TaskCreate` | 485 | 0 |
+| `Agent` | 136 | 3 |
 
-Status split across all 33,547 calls: 32,243 `completed`, 1,082 `error`,
-201 `backgrounded`, 21 with no result at all (pending).
+Status split across all 34,432 calls: 33,082 `completed`, 1,116 `error`,
+213 `backgrounded`, 21 with no result at all (pending).
 
-Separately, of the 33,531 records that carry a `toolUseResult`, **14,770 have no
+Separately, of the 34,417 records that carry a `toolUseResult`, **15,161 have no
 `kind`** — nearly half. Treating those as unfinished reported finished work as
 pending, which is why a missing `kind` means *completed*.
 
@@ -125,16 +125,23 @@ python3 -m unittest discover -s scripts/tests
 
 | suite | cases |
 |---|---:|
-| `test_sync.py` | 39 |
 | `test_usage.py` | 53 |
-| `test_tui.py` | 39 |
+| `test_sync.py` | 43 |
+| `test_tui.py` | 41 |
+| `test_stats.py` | 32 |
 | `test_config.py` | 16 |
+| `test_record_coverage.py` | 13 |
+| `test_snapshots.py` | 13 |
+| `test_format_registry.py` | 10 |
+| `test_maintenance_docs.py` | 10 |
 | `test_privacy.py` | 9 |
 | `test_dispatcher.py` | 9 |
-| **total** | **165** |
+| `test_readme_bilingual.py` | 7 |
+| `test_readme_counts.py` | 6 |
+| **total** | **262** |
 
-Wall time is dominated by Textual's harness: `test_tui.py` alone is ~68 s, the
-other five together ~5 s.
+Wall time is dominated by Textual's harness: `test_tui.py` alone is 59 s, the other
+twelve together ~7 s.
 
 Run green on all three interpreters with `textual 8.2.8` installed in each — this
 is what the CI matrix pins (floor from `requires-python`, plus the highest version
@@ -142,11 +149,12 @@ measured):
 
 | interpreter | result |
 |---|---|
-| Python 3.11.15 | 165 OK |
-| Python 3.13.14 (the `install.sh` venv) | 165 OK |
-| Python 3.14.4 | 165 OK |
+| Python 3.11.15 | 262 OK |
+| Python 3.13.14 (the `install.sh` venv) | 262 OK |
+| Python 3.14.4 | 262 OK |
 
-`test_config.py` and `test_tui.py` need `textual`; the other four are stdlib-only.
+`test_config.py` and `test_tui.py` need `textual`; the other eleven are
+stdlib-only.
 Running the suite on a bare interpreter without `textual` gives three *errors* in
 `test_config.py`, because its wiring cases exec `qcut-tui.py` — that is a missing
 dependency, not a Python-version problem, and it is the one way to mistake an

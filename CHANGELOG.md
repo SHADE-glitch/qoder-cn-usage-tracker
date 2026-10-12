@@ -101,6 +101,62 @@ One entry per released change, newest first.
   while sitting inside `docs/maintenance/`. It now links the router that names the
   regeneration command.
 
+**Safety — the way back actually works**
+
+- `fix` `snapshot()` names itself from a one-second timestamp, so two snapshots in
+  the same second asked for the **same file** and the later one overwrote the
+  earlier. The pair that mattered was not two `qcut backup`s: `restore` writes a
+  `pre-restore` copy of the index it is about to replace, so a second restore in
+  the same second overwrote the snapshot it was about to read — undoing the undo,
+  silently, in the one mechanism that makes a destructive step reversible. Names
+  now take a `-1`/`-2` suffix.
+- `fix` Retention ran only in `qcut backup`, so the snapshots that `sync --full`
+  and `restore` take grew `backups/` forever while the documented promise said
+  "keeps five". `db.snapshot()` prunes now, and the CLI names the files that went.
+  Pruning orders by mtime, not name: once the suffixes exist, `-10` sorts before
+  `-2`, which would have made retention delete the newer file.
+- `fix` `qcut backup` on a machine with no index opened the path — which *creates*
+  it — and then snapshotted the emptiness and printed `wrote …`. It refuses now and
+  says to run `qcut sync`, and the index is left uncreated.
+- `fix` `sync --full` on an index that holds nothing wrote a snapshot of nothing.
+  `db._has_indexed_state()` had been ported for exactly this decision and wired to
+  no caller, so every first run and every test left clutter that could not be
+  restored to anything.
+- `fix` `--limit` was registered on all eleven read subcommands and read by six;
+  `--range` on all eleven and read by one, so `qcut stats --limit 5` printed every
+  row. Each flag is now registered only where its command passes it to a query
+  (`--limit`: the five table reports plus `show`; `--range`: `show` alone), and the
+  parser refuses the rest.
+
+**Chrome — the look-alike claim, checked**
+
+- `taste` The eight tab titles lost their emoji (`🧭 Dashboard` → `Dashboard`), and
+  the app stopped overriding the canvas with `Screen { background: $surface; }` and
+  the status line with `background: $panel`. Measured through Textual's harness,
+  both apps resolve `screen.bg` to `Color(18, 18, 18)` and both tab strips read
+  `Dashboard · Tools · Skills · Agents · Plugins · MCP · Tokens · Usage`.
+- `guard` `test_tui.py::ChromeTest` pins both shape facts, so the chrome cannot be
+  re-decorated by an edit that reads as harmless.
+
+**Guards ported from the reference project**
+
+- `guard` Five suites arrived from the tool this one mirrors, re-aimed at this
+  repository's shapes: `test_stats.py` (the headless CLI end to end, 32 cases),
+  `test_snapshots.py` (the destructive step's way back, 13),
+  `test_record_coverage.py` (a commit touching a production script must leave a
+  bullet of the matching kind in this file, 13), `test_readme_counts.py` (every
+  count in either README and in `baseline.md`'s suite table equals the number read
+  off the suites' syntax trees, 6)
+  and `test_readme_bilingual.py` (the two READMEs keep the same sections in the
+  same order, 7). Assertions that would be hollow here were left unported and are
+  named in each file's docstring — `D-###` citation mechanics, status-code parity,
+  a pre-migration snapshot at `SCHEMA_VERSION` 1.
+- `fix` The suite total is 165 → **262** across 13 suites. Every documented count
+  moved with it: both READMEs' tables and totals, and
+  `docs/maintenance/baseline.md`, whose source measurements were taken again the
+  same evening (176 files / 370 MB, cold 4.76 s, `inventory` 62 → 35 rows — the
+  inflation the Indexing group below removed).
+
 **Indexing**
 
 - `fix` `inventory` duplicated on every sync. The table has no unique key, so the

@@ -28,7 +28,9 @@ one axis into the other.
   touch stays visible.
 - **L2** — the real `~/.qoder-cn` transcripts and the real
   `~/.local/share/qoder-cn-usage-tracker/usage.db`. Needs the owner's go-ahead; a destructive step
-  takes a snapshot first (`qcut sync --full` does this automatically, keeping the last five).
+  takes a snapshot first (`qcut sync --full` does this automatically; retention to
+  the newest five is enforced inside `db.snapshot()`, so no snapshot path can grow
+  the directory).
 
 ## Commands that produce the numbers
 ```bash

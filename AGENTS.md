@@ -142,6 +142,16 @@ missing package, not a Python-version failure — do not read it as one.
 
 ## Conventions
 
+- **This UI is a look-alike, and the chrome is part of the claim.** Tab titles are
+  plain words (`Dashboard`, `MCP`) with no emoji, and the app defines no canvas or
+  status-bar `background` of its own — both are Textual defaults, as in the tool
+  this one mirrors. The emoji that *do* appear in the READMEs sit in the feature
+  bullets and the first column of the tab table; they document the tabs, they are
+  not the tab labels. `test_tui.py::ChromeTest` pins the two shape facts.
+- **A flag is registered only where a command reads it.** `--limit` belongs to the
+  six reports that pass it to a query, and `--range` only to `show`, which is the
+  one command with a window argument. A flag the parser accepts and the report
+  ignores reads as a filter that worked.
 - **Docs are bilingual**: `README.md` (English, landing page) and
   `README.zh-CN.md` (Chinese). Edit both together and keep section order aligned;
   a section added on one side alone is drift.
@@ -220,7 +230,10 @@ Named by what the claim needs, not by the tool:
   regression in a table you did not touch stays visible.
 - **L2** = the real `~/.local/share/qoder-cn-usage-tracker/usage.db`. Needs the
   owner's go-ahead; a destructive step takes a snapshot first (`qcut sync --full`
-  does this automatically, keeping the last five under `backups/`).
+  does this automatically). Retention lives in `db.snapshot()` — every snapshot
+  path prunes to the newest five, names itself with a `-1`/`-2` suffix rather than
+  overwriting the copy it was meant to keep, and skips the snapshot entirely when
+  the index holds nothing.
 
 ## Invariants and how to check them
 
