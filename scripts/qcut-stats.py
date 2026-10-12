@@ -380,7 +380,13 @@ def cmd_health(conn, args):
           f" {'(exists)' if db.QODER_DIR.exists() else '(MISSING)'}")
     print(f"config:   {db.CONFIG_PATH}"
           f" {'(read)' if db.CONFIG_PATH.is_file() else '(not present)'}")
-    cfg = db.load_config()
+    try:
+        cfg = db.load_config()
+    except db.ConfigError as exc:
+        # A file the owner just edited that is not being read is the worst
+        # failure this surface can have, and a traceback names no way to fix it.
+        print(f"config is not usable: {exc}", file=sys.stderr)
+        return 1
     for key in sorted(cfg):
         print(f"  setting {key} = {cfg[key]}")
     print()

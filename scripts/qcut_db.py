@@ -613,8 +613,16 @@ def stored_version(conn: sqlite3.Connection) -> int:
 
 
 def _has_indexed_state(conn: sqlite3.Connection) -> bool:
-    row = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()
-    return bool(row and row[0])
+    """Whether a snapshot would preserve anything at all.
+
+    Checked against the tables `reset` clears, not against `sync_state` alone: a
+    database that holds usage rows whose offsets were lost is precisely the state
+    worth a way back, and one table's count would call it empty.
+    """
+    for table in ("sync_state", "model_calls", "tool_calls"):
+        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+            return True
+    return False
 
 
 def ensure_schema(conn: sqlite3.Connection) -> str:

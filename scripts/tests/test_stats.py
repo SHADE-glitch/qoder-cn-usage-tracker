@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 
 # `_helpers` puts scripts/ on sys.path, so it must be imported before qcut_db.
-from _helpers import SCRIPTS, TempTree
+from _helpers import SCRIPTS, TempTree, no_settings_env
 
 import qcut_db as db
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
@@ -504,6 +504,25 @@ class HealthReportTest(unittest.TestCase):
         for key, value in (("tool_calls", 4), ("model_calls", 1), ("inventory", 7),
                            ("sync_state", 1), ("sessions", 1)):
             self.assertRegex(out, rf"{key}\s+{value}\b")
+
+    def test_a_broken_settings_file_is_reported_and_not_raised(self):
+        """`qcut health` is the command you reach for when something is wrong.
+
+        A malformed file raised `ConfigError` straight out of `load_config()` and
+        the command died with a traceback -- which names the file, but only to
+        someone who can read a stack. It answers with the same message, a non-zero
+        rc, and no traceback now. The environment is hidden first: it outranks the
+        file, so a case that did not would be asserting someone else's shell.
+        """
+        (self.t.root / "config.toml").write_text('name_cap = "abc"\n',
+                                                 encoding="utf-8")
+        with no_settings_env():
+            rc, out, err = run("--db", self.t.db_path, "health")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("config is not usable", err)
+        self.assertIn("name_cap", err)
+        self.assertIn("config.toml", err)
+        self.assertNotIn("Traceback", err)
 
     def test_health_surfaces_an_unclaimed_record_type(self):
         """The whole point of the `unparsed` table is that health shows it."""

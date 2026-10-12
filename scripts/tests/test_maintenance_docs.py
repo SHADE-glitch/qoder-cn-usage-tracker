@@ -182,6 +182,55 @@ class CiMatchesTheDeclarationTest(unittest.TestCase):
                 self.assertIn(v, text,
                               f"{name} does not document that CI runs {v}")
 
+    def test_the_stdlib_only_count_is_the_suite_list_minus_textual(self):
+        """Three pages state how many suites need no third-party package.
+
+        Each is a count over `scripts/tests/`, so a new suite makes all three wrong
+        without any code changing. Checked as a number, in whichever words the page
+        uses, and a page that stops stating it fails too -- an absent claim is the
+        same drift as a false one.
+        """
+        textual_suites = {"test_tui.py", "test_config.py"}
+        suites = sorted(p.name for p in (SCRIPTS / "tests").glob("test_*.py"))
+        self.assertEqual(len(suites), len(textual_suites) + 12,
+                         "the suite list moved out from under this case's own "
+                         "arithmetic -- review which suites import textual")
+        expected = len(suites) - len(textual_suites)
+
+        # Written out, not generated: a page that says "twenty" must be read, and
+        # a word list with a hole in it turns a true sentence into a red suite.
+        words = {name: n for n, name in enumerate(
+            ("one", "two", "three", "four", "five", "six", "seven", "eight",
+             "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+             "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+             "twenty"), start=1)}
+        claim = re.compile(
+            r"other\s+(\d+|[a-z]+)\s+(?:suites\s+)?(?:are|is)\s+"
+            r"(?:standard-library|stdlib-only)")
+        pages = {"AGENTS.md": ROOT / "AGENTS.md",
+                 "baseline.md": DOCS / "baseline.md",
+                 "compatibility.md": DOCS / "compatibility.md"}
+        wrong, missing = [], []
+        for name, page in pages.items():
+            text = page.read_text(encoding="utf-8")
+            found = list(claim.finditer(text))
+            if not found:
+                missing.append(name)
+            for match in found:
+                raw = match.group(1)
+                value = int(raw) if raw.isdigit() else words.get(raw)
+                self.assertIsNotNone(
+                    value, f"{name}: '{raw}' is not a number this case reads")
+                if value != expected:
+                    wrong.append((name, raw, value))
+        self.assertEqual(missing, [],
+                         f"these pages no longer state the stdlib-only count at "
+                         f"all: {missing}")
+        self.assertEqual(
+            wrong, [],
+            f"{expected} of {len(suites)} suites are stdlib-only, but these pages "
+            f"say otherwise: {wrong}")
+
     def test_the_baseline_states_its_own_date(self):
         """A number without a date reads as a standing guarantee. This tree grows
         while it is being measured, so every figure here expires."""

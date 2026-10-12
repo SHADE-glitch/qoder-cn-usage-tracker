@@ -205,7 +205,7 @@ sync_secs = 30       # TUI 自动同步周期
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 269 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 275 tests ... OK
 ```
 
 测试套件是 `unittest`（`pytest` 也能发现它们）。其中两套需要安装 `textual`：`test_tui.py`，以及 `test_config.py`——后者的接线用例会把 TUI 模块加载起来，用以证明每个设置项真的到达渲染器。每个套件都在临时目录里自建一次性数据库**以及**一次性 Qoder 目录树——你真实的 `usage.db` 与 `~/.qoder-cn` 从不会被打开，仓库中也没有任何代码路径会访问网络。
@@ -214,14 +214,14 @@ python3 -m unittest discover -s scripts/tests     # Ran 269 tests ... OK
 |---|---:|---|
 | `test_sync.py` | 43 | 转录解析、归类（工具 / 技能 / 代理 / MCP）、路由来源、清单、增量与全量重建、带时间戳的状态配对、未认领记录统计、schema 里**每一张表**的幂等性、崩溃安全 |
 | `test_usage.py` | 53 | 自然日窗口、缓存命中率、全部查询辅助函数、「已安装 ∪ 用过」并集、token/积分那**同一条**上报判定及其 SQL↔Python 镜像、schema、最小版的 snapshot→list→restore 往返、尚无数据库的全新安装，以及无头报表的措辞 |
-| `test_stats.py` | 32 | 无头 CLI 的端到端：每个子命令都真的调用 `main([...])`，`--db` 与 `--limit`、只读连接、索引过期时的拒绝并指出修法、`export` / `inventory` / `recent` / `show` / `health`、`backup`/`restore` 这一对，以及入口脚本绝不碰它没被给过的路径 |
-| `test_snapshots.py` | 13 | 破坏性步骤的回退之路：快照在改动**之前**取、是在线备份而非把还在 `-wal` 里的主文件按字节拷贝、restore 保留它覆盖掉的状态，以及回收只删自己生成的文件 |
-| `test_config.py` | 16 | 设置层：默认值、文件、环境优先级与边界、损坏文件指名路径、`qcut health` 打印的键 |
+| `test_stats.py` | 33 | 无头 CLI 的端到端：每个子命令都真的调用 `main([...])`，`--db` 与 `--limit`、只读连接、索引过期时的拒绝并指出修法、`export` / `inventory` / `recent` / `show` / `health`、损坏设置文件报成一句话而不是抛栈、`backup`/`restore` 这一对，以及入口脚本绝不碰它没被给过的路径 |
+| `test_snapshots.py` | 14 | 破坏性步骤的回退之路：快照在改动**之前**取、是在线备份而非把还在 `-wal` 里的主文件按字节拷贝、restore 保留它覆盖掉的状态、回收只删自己生成的文件，以及丢了偏移量的索引仍然值得一份快照 |
+| `test_config.py` | 19 | 设置层：默认值、文件、环境优先级与边界、损坏文件指名路径、`qcut health` 打印的键，以及**每个声明的旋钮都有渲染器真的去读**——用户改了却毫无效果的设置项，就是这一条在拦 |
 | `test_privacy.py` | 9 | 生产脚本的导入白名单、证明源目录未被改写的指纹、跨所有文本列的哨兵串扫描，以及正向对照 |
 | `test_tui.py` | 45 | 用 Textual 自带 `run_test` 验证标签接线、每标签独立范围、插件页无窗口、列计划、空状态、下钻、两根度量轴上 `—`/`-`/数字的三态区分、标签名与画布底色这两条外观约定、**每个页面自己的表格由谁路由**（被推入的页面的行不得被路由两次），以及**真正显示在屏幕上**（而非仅仅存有文本）的状态行 |
 | `test_dispatcher.py` | 9 | `bin/qcut` 路由、参数透传，以及它之所以用 bash 的那些失败模式 |
 | `test_format_registry.py` | 10 | 用 AST 把格式登记表与它旁边的解析器互为镜像：读到的字段必须登记、登记的字段必须仍在读、分发链与登记表声称认领同一组记录类型，且分隔符 / 路径段 / 工具名都不许在调用点手打 |
-| `test_maintenance_docs.py` | 10 | 生成的格式文档等于 `qcut format` 今天打印的内容、每个维护资产都能从路由文档抵达、每条链接都能解析，以及 CI 矩阵钉住的正是 `pyproject.toml` 声明的下限 |
+| `test_maintenance_docs.py` | 11 | 生成的格式文档等于 `qcut format` 今天打印的内容、每个维护资产都能从路由文档抵达、每条链接都能解析，以及 CI 矩阵钉住的正是 `pyproject.toml` 声明的下限 |
 | `test_hermetic.py` | 10 | 让套件远离真实数据库的绊线：只认那个受保护路径（别的都不认）、指向它的连接被拒绝、钩子在子进程上端到端地活着、同一个子进程钉上 `QCUT_DB` 后放行，且任何测试模块都不许跳过该 import |
 | `test_readme_counts.py` | 6 | 两份 README 里每一个用例数字——每行、每个总数——都等于从套件语法树上读下来的数量；盘上有套件却没有对应行，与行指向已删除的文件，同样判红 |
 | `test_readme_bilingual.py` | 7 | 两份 README 是同一份文档的两种语言：标题表情符号序列与其顺序必须一致，因此任何一侧单独增 / 删 / 移动小节都会判红；每条页内链接都指向真实标题 |
@@ -239,7 +239,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-sync.py` | 转录解析器与增量索引器（`--full`、`--quiet`） |
 | `scripts/qcut-stats.py` | 无头报表 |
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
-| `scripts/tests/` | 上述 269 个用例 |
+| `scripts/tests/` | 上述 275 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |

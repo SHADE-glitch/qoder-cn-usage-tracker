@@ -51,9 +51,10 @@ Single file: `python3 -m unittest discover -s scripts/tests -p 'test_sync.py'`.
 
 **Run the suite with the project venv** (`.venv/bin/python -m unittest …`). Two
 suites need `textual`: `test_tui.py`, and `test_config.py` — its wiring cases
-exec `qcut-tui.py` to prove every setting is read by a renderer. The other four
-(`test_sync`, `test_usage`, `test_privacy`, `test_dispatcher`) are stdlib-only and
-run anywhere. On a bare interpreter without `textual`, `test_config.py` reports
+exec `qcut-tui.py` to prove every setting is read by a renderer. The other twelve
+are stdlib-only and run anywhere. That count is checked against `scripts/tests/`
+rather than typed (`test_maintenance_docs.py`), because a suite added later would
+otherwise make this sentence a lie by existing. On a bare interpreter without `textual`, `test_config.py` reports
 three *errors* (`SystemExit: 2` from the TUI's own dependency guard): that is a
 missing package, not a Python-version failure — do not read it as one.
 

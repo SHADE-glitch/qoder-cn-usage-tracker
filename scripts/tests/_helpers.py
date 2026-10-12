@@ -7,7 +7,9 @@ a test that reads live state is an instrument error, not a finding.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -102,6 +104,26 @@ def usage(input_tokens=None, output_tokens=None, cache_read=None, cache_creation
         if value is not None:
             out[key] = value
     return out
+
+
+#: Every environment name that outranks the settings file, derived rather than
+#: typed: a hand-copied list is how the next knob gets forgotten in the isolation
+#: helper too. `QCUT_CONFIG` is not in `ENV_NAMES` (it names the file itself) and
+#: the two launcher paths outrank the temp tree, so a case that asserts the file or
+#: the defaults must hide all of them.
+SETTINGS_ENV = tuple(db.ENV_NAMES.values()) + ("QCUT_CONFIG", "QCUT_DB",
+                                               "QCUT_QODER_DIR")
+
+
+@contextlib.contextmanager
+def no_settings_env():
+    """Run with no qcut settings in the environment, whatever the shell has."""
+    saved = {name: os.environ.pop(name) for name in SETTINGS_ENV
+             if name in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
 
 
 class TempTree:

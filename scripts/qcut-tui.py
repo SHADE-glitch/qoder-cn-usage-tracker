@@ -1411,10 +1411,6 @@ class TrackerApp(WideTableMixin, App):
     # before the user touches anything.
     INITIAL_TAB = "dashboard"
 
-    USAGE_LOG_LIMIT = 100
-    DASH_TOP = 5            # rows in the Dashboard's Top models / Top tools
-    DETAIL_LIMIT = 200      # rows on a history / model-response screen
-
     # Below this width the panels stack instead of sitting side by side: each
     # column needs ~28 cells for a 24-char panel line plus border/padding, so
     # 4 x 28 = 112.
@@ -1808,7 +1804,7 @@ class TrackerApp(WideTableMixin, App):
         summary = db.q_usage_summary(conn, start, end)
         act = db.q_usage_activity(conn, start, end)
         models = db.q_usage_model_stats(conn, start, end)
-        tools = db.q_tools(conn, limit=self.DASH_TOP, start_ts=start, end_ts=end)
+        tools = db.q_tools(conn, limit=self.cfg["top_n"], start_ts=start, end_ts=end)
         daily = db.q_usage_daily(conn, start, end)
 
         self._put_panel("#dash-kpi-tools", "Tool calls", f"{kpi['tool_calls']:,}")
@@ -1857,7 +1853,7 @@ class TrackerApp(WideTableMixin, App):
             self.query_one("#dash-models", Static).update(
                 "nothing in this window")
         else:
-            top = models[:self.DASH_TOP]
+            top = models[:self.cfg["top_n"]]
             self.query_one("#dash-models", Static).update("\n".join(
                 f"{i}. {clip(r['model'], 24):<24}"
                 f"{fmt_credit_total(r['credits'], r['credits_carried']):>10}"
@@ -1865,7 +1861,7 @@ class TrackerApp(WideTableMixin, App):
                 for i, r in enumerate(top, 1)))
 
         # The name-keyed list keeps 0-call tools under a window; drop them.
-        live = [r for r in tools if r["calls"]][:self.DASH_TOP]
+        live = [r for r in tools if r["calls"]][:self.cfg["top_n"]]
         if not live:
             self.query_one("#dash-tools", Static).update("nothing in this window")
         else:

@@ -211,6 +211,43 @@ class EmptyIndexTest(unittest.TestCase):
             conn.close()
 
 
+class LostCursorTest(unittest.TestCase):
+    """"Nothing indexed" must mean nothing *indexed*, not "no offsets recorded"."""
+
+    def test_a_database_whose_offsets_were_lost_is_still_snapshotted(self):
+        """`sync --full` on an index that has rows but no `sync_state`.
+
+        That is a real shape, not a thought experiment: a restored or hand-copied
+        database can carry usage rows with its cursor gone, and the next rebuild
+        deletes them. Deciding "nothing to protect" from `sync_state` alone would
+        skip the snapshot of the one state nobody can rebuild -- the transcripts
+        may since have moved on.
+        """
+        t = TempTree(self)
+        conn = t.conn()
+        conn.execute("INSERT INTO tool_calls(call_id, tool_name, ts)"
+                     " VALUES('c1','Unrebuildable',?)", (TS,))
+        conn.commit()
+        cursors = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]
+        conn.close()
+        self.assertEqual(cursors, 0,
+                         "the fixture must hold usage rows with no cursor behind them")
+
+        t.sync(full=True)
+        snaps = [p.name for p in db.list_backups(t.db_path)]
+        self.assertTrue(
+            any("before-full-sync" in n for n in snaps),
+            f"a rebuild of an index with rows took no snapshot: {snaps}")
+        conn = db.open_db(t.db_path)
+        try:
+            names = [r[0] for r in conn.execute(
+                "SELECT tool_name FROM tool_calls")]
+        finally:
+            conn.close()
+        self.assertNotIn("Unrebuildable", names,
+                         "the rebuild did not clear the table it is meant to clear")
+
+
 class RestoreSafetyTest(unittest.TestCase):
     """A restore is itself a destructive step."""
 

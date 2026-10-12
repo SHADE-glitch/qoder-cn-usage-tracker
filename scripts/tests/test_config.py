@@ -7,6 +7,7 @@ name hidden, or a configured shell turns them into false failures.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import os
@@ -15,22 +16,10 @@ import unittest
 from pathlib import Path
 
 # `_helpers` puts scripts/ on sys.path, so it must be imported before qcut_db.
-from _helpers import SCRIPTS
+from _helpers import SCRIPTS, no_settings_env
 
 import qcut_db as db
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
-
-ENV_NAMES = tuple(db.ENV_NAMES.values()) + ("QCUT_CONFIG", "QCUT_DB", "QCUT_QODER_DIR")
-
-
-@contextlib.contextmanager
-def no_settings_env():
-    saved = {name: os.environ.pop(name) for name in ENV_NAMES if name in os.environ}
-    try:
-        yield
-    finally:
-        os.environ.update(saved)
-
 
 def load_tui(name="qcut_tui_cfg"):
     spec = importlib.util.spec_from_file_location(name, str(SCRIPTS / "qcut-tui.py"))
@@ -38,6 +27,61 @@ def load_tui(name="qcut_tui_cfg"):
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+class SettingsHaveConsumersTest(unittest.TestCase):
+    """A key the loader returns and no renderer consults is a knob you can edit
+    for no effect -- which is the exact failure this project's settings rule
+    forbids, and `top_n` lived with it: declared, validated, bounded, printed by
+    `qcut health`, and read by nothing while the Dashboard sliced a class constant.
+
+    Scanned off the two entry scripts' syntax trees rather than from a list, so a
+    seventh knob cannot be added without either giving it a consumer or failing
+    here. Reading a value is not enough to count: `qcut health` prints every key,
+    so the keys it merely *reports* are subtracted back out.
+    """
+
+    #: The settings layer and the two surfaces that render behaviour.
+    CONSUMERS = ("qcut-tui.py", "qcut-stats.py")
+
+    def consumed_keys(self):
+        found = set()
+        for name in self.CONSUMERS:
+            tree = ast.parse((SCRIPTS / name).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Subscript)
+                        and isinstance(node.slice, ast.Constant)
+                        and isinstance(node.slice.value, str)
+                        and self._is_cfg(node.value)):
+                    found.add(node.slice.value)
+        return found
+
+    @staticmethod
+    def _is_cfg(node):
+        """True for `cfg["k"]`, `self.cfg["k"]`, `self.app.cfg["k]`-shaped hosts."""
+        if isinstance(node, ast.Attribute):
+            return node.attr == "cfg"
+        return isinstance(node, ast.Name) and node.id == "cfg"
+
+    def test_every_declared_setting_is_read_by_a_renderer(self):
+        unused = set(db.DEFAULTS) - self.consumed_keys()
+        self.assertEqual(
+            unused, set(),
+            f"setting(s) no renderer consults: {sorted(unused)} -- give each one "
+            "a consumer where the value is used, or drop the knob")
+
+    def test_no_renderer_reads_a_setting_that_was_never_declared(self):
+        """The other direction: a typo'd key reads as a default that works."""
+        undeclared = self.consumed_keys() - set(db.DEFAULTS)
+        self.assertEqual(
+            undeclared, set(),
+            f"key(s) read but not in DEFAULTS: {sorted(undeclared)}")
+
+    def test_the_scanner_finds_a_consumer_it_cannot_miss(self):
+        """Positive control: the scan sees the six keys that really are read."""
+        self.assertEqual(self.consumed_keys(), set(db.DEFAULTS),
+                         "the scanner's result is not the shipped knob set -- "
+                         "this case is the one that keeps the two above honest")
 
 
 class DefaultsTest(unittest.TestCase):
