@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor and declared upper bound. The floor is `requires-python` in
+        # pyproject.toml (3.11); 3.14 is the highest version the suite has been
+        # run green on. Both ends of the declared range are covered. The local
+        # venv that install.sh creates is 3.13 — a middle version, which is
+        # exactly why pinning it here would prove nothing about either end.
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python3 -m unittest discover -s scripts/tests

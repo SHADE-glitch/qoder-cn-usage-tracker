@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# qcut — entry point for the Qoder CN usage tracker.
+#
+#   qcut                 launch the interactive TUI (eight tabs)
+#   qcut sync            index new Qoder CN transcripts into the database
+#   qcut sync --full     rebuild the database from scratch
+#   qcut stats|tools|skills|agents|plugins|mcp|models|show|recent|inventory|export|health
+#                        headless reports (no TUI, stdlib only)
+#   qcut backup          snapshot the database before a risky step
+#   qcut restore         list snapshots, or restore one: qcut restore NAME
+#   qcut format          the Qoder CN fields and paths this tool depends on
+#
+# Written in bash on purpose: it must still run and print a useful error when
+# the TUI venv is missing or broken, so it cannot depend on any Python.
+#
+# Location-independent: resolves itself through symlinks, so the repo may live
+# anywhere and the ~/.local/bin/qcut install may be a symlink back to it.
+# Override with QCUT_SCRIPTS (a scripts/ dir) and QCUT_VENV (a venv dir or a
+# python binary) when the layout is unusual.
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+SELF="${SELF:-${BASH_SOURCE[0]}}"
+REPO_DIR="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)" || REPO_DIR=""
+
+cmd="${1:-tui}"
+
+SCRIPTS="${QCUT_SCRIPTS:-}"
+if [ -z "$SCRIPTS" ] || [ ! -d "$SCRIPTS" ]; then
+  if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/scripts" ]; then
+    SCRIPTS="$REPO_DIR/scripts"
+  elif [ "$cmd" != "help" ] && [ "$cmd" != "-h" ] && [ "$cmd" != "--help" ]; then
+    # install.sh only ever symlinks bin/qcut into ~/.local/bin; it never copies
+    # the scripts into a user path, so there is no second place to look.
+    echo "qcut: no scripts directory found next to $SELF — set QCUT_SCRIPTS" >&2
+    exit 1
+  fi
+fi
+
+# `help` needs nothing but this file, so it is answered before the venv is
+# resolved: a broken or unset interpreter must not make the help text
+# unreachable, which is the same reason this launcher is bash at all.
+case "$cmd" in
+  -h|--help|help)
+    # Print the leading comment block rather than a hard-coded line range: the
+    # range is exactly what lets help text drift out of step with the dispatch.
+    tail -n +2 "$SELF" | while IFS= read -r line; do
+      case "$line" in
+        \#*) line="${line#\#}"; printf '%s\n' "${line# }" ;;
+        *) break ;;
+      esac
+    done
+    exit 0
+    ;;
+esac
+
+# QCUT_VENV may name a venv directory *or* a python binary. Naming the
+# interpreter used to be discarded silently and system python3 ran instead,
+# which is invisible until the TUI fails on a missing dependency.
+PY="${QCUT_VENV:-}"
+if [ -n "$PY" ] && [ -x "$PY/bin/python" ]; then
+  PY="$PY/bin/python"
+elif [ -n "$PY" ] && [ -x "$PY" ]; then
+  :
+elif [ -n "$PY" ]; then
+  echo "qcut: QCUT_VENV='$PY' is neither a venv dir nor an executable" >&2
+  exit 1
+elif [ -n "$REPO_DIR" ] && [ -x "$REPO_DIR/.venv/bin/python" ]; then
+  PY="$REPO_DIR/.venv/bin/python"
+else
+  # The headless reports need only the standard library. The TUI prints its own
+  # instructions when it cannot import textual.
+  PY="python3"
+fi
+
+case "$cmd" in
+  tui|"")    shift || true; exec "$PY" "$SCRIPTS/qcut-tui.py" "$@" ;;
+  sync)      shift || true; exec "$PY" "$SCRIPTS/qcut-sync.py" "$@" ;;
+  *)
+    exec "$PY" "$SCRIPTS/qcut-stats.py" "$@"
+    ;;
+esac

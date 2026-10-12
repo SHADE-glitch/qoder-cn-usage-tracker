@@ -1,0 +1,14 @@
+# Runtime state — never committed.
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+backups/
+
+# Working notes (session reports). Long-lived maintenance material goes in
+# docs/maintenance/ and *is* committed; these are not artifacts.
+reports/

@@ -1,0 +1,11 @@
+[Unit]
+Description=Index Qoder CN session transcripts into the qcut usage database
+Documentation=https://github.com/SHADE-glitch/qoder-cn-usage-tracker
+After=default.target
+
+[Service]
+Type=oneshot
+# Nice=10: the index walk is I/O bound and must never compete with a live
+# Qoder session for CPU.
+Nice=10
+ExecStart=%h/.local/bin/qcut sync --quiet

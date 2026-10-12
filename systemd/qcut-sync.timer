@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Qoder CN usage sync (qcut)
+
+[Timer]
+OnCalendar=daily
+# Persistent=true catches up a run missed while the machine was off, and the
+# jitter keeps every install from waking at the same second.
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

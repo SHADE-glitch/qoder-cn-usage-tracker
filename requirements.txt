@@ -1,0 +1,3 @@
+# The interactive TUI's only runtime dependency. Everything else — the indexer,
+# the headless reports, the settings layer, the tests — is the standard library.
+textual>=8.2,<9
