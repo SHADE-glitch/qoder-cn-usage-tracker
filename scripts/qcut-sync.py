@@ -818,7 +818,11 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
     qoder_dir = db.QODER_DIR
     root = Path(qoder_dir) / DIR_PROJECTS
     if full:
-        db.snapshot(conn, "before-full-sync", db.db_file(conn) or db.DB_PATH)
+        # A snapshot of an index that holds nothing is clutter, not a way back —
+        # and every fresh install and every test run lands here before there is
+        # anything to protect.
+        if db._has_indexed_state(conn):
+            db.snapshot(conn, "before-full-sync", db.db_file(conn) or db.DB_PATH)
         db.reset(conn)
 
     inv = scan_inventory(conn, qoder_dir)

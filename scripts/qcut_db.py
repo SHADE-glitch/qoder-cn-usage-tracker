@@ -507,18 +507,38 @@ def backup_dir(db_path=None) -> Path:
 
 BACKUP_KEEP = 5
 
+#: The shape :func:`snapshot` makes. Prune and list both speak it, so a snapshot
+#: nobody named is never deleted by retention and never missed by a restore.
+BACKUP_PATTERN = "usage-*.db"
+
 
 def snapshot(conn, reason: str = "manual", db_path=None) -> Path:
-    """Copy the database to ``backups/`` before a destructive step."""
+    """Copy the database to ``backups/`` before a destructive step.
+
+    Two details are the whole point of this function and neither is obvious:
+
+    * the name is only unique per *second*, so a second snapshot taken in the
+      same second used to overwrite the first — and the overwrite that mattered
+      was :func:`restore`'s ``pre-restore`` copy, which deleted the very safety
+      copy it was making. Hence the suffix loop;
+    * retention is enforced here, not by the caller. ``sync --full`` and
+      ``restore`` both take snapshots, and a caller that forgot to prune is a
+      directory that grows forever while the promise says it keeps five.
+    """
     target_dir = backup_dir(db_path)
     target_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dest = target_dir / f"usage-{stamp}-{reason}.db"
+    base = f"usage-{datetime.now():%Y%m%d-%H%M%S}"
+    dest = target_dir / f"{base}-{reason}.db"
+    n = 1
+    while dest.exists():
+        dest = target_dir / f"{base}-{reason}-{n}.db"
+        n += 1
     dest_conn = sqlite3.connect(str(dest))
     try:
         conn.backup(dest_conn)
     finally:
         dest_conn.close()
+    prune_backups(db_path)
     return dest
 
 
@@ -526,15 +546,27 @@ def list_backups(db_path=None) -> list[Path]:
     d = backup_dir(db_path)
     if not d.is_dir():
         return []
-    return sorted(d.glob("usage-*.db"))
+    return sorted(d.glob(BACKUP_PATTERN))
 
 
 def prune_backups(db_path=None, keep: int = BACKUP_KEEP) -> list[Path]:
+    """Delete managed snapshots beyond the newest ``keep``, and say which.
+
+    Ordered by mtime, not by name: the collision suffixes make ``-10`` sort
+    before ``-2``, so a name-ordered prune would delete the *newer* file —
+    retention backwards, and silent.
+    """
+    files = list_backups(db_path)
+    if keep > 0:
+        files = sorted(files, key=lambda p: (p.stat().st_mtime, p.name),
+                       reverse=True)[keep:]
     removed = []
-    for path in list_backups(db_path)[:-keep] if keep > 0 else list_backups(db_path):
+    for path in files:
         path.unlink(missing_ok=True)
         removed.append(path)
-    return removed
+    # The selection above is mtime-ordered; the report goes back in name order,
+    # so a caller printing it twice prints the same thing in the same order.
+    return sorted(removed, key=lambda p: p.name)
 
 
 def restore(backup_path, db_path=None, reason: str = "pre-restore") -> Path:

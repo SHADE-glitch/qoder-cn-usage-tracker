@@ -400,16 +400,24 @@ def cmd_health(conn, args):
 
 
 def cmd_backup(args) -> int:
-    conn = db.open_db(args.db)
+    path = Path(args.db)
+    if not path.is_file():
+        # Opening it would create an empty index and then faithfully snapshot
+        # the emptiness — a safety copy of nothing, printed as a success.
+        print(f"no database at {path} — run `qcut sync` first", file=sys.stderr)
+        return 1
+    conn = db.open_db(path)
     try:
         db.ensure_schema(conn)
-        dest = db.snapshot(conn, "manual", db.db_file(conn))
-        removed = db.prune_backups(db.db_file(conn))
+        # Retention runs inside `snapshot`, so it also runs for `sync --full` and
+        # `restore`. The names are captured here only to say which files went.
+        before = {p.name for p in db.list_backups(path)}
+        dest = db.snapshot(conn, "manual", path)
     finally:
         conn.close()
     print(f"wrote {dest}")
-    for path in removed:
-        print(f"pruned {path}")
+    for name in sorted(before - {p.name for p in db.list_backups(path)}):
+        print(f"pruned {dest.parent / name}")
     return 0
 
 
@@ -484,15 +492,19 @@ def main(argv=None) -> int:
     parser.add_argument("--db", default=str(db.DB_PATH))
     sub = parser.add_subparsers(dest="cmd")
 
-    for name in ("stats", "tools", "skills", "agents", "plugins", "mcp", "models",
-                 "recent", "inventory", "export", "health"):
-        p = sub.add_parser(name)
-        p.add_argument("--limit", type=int, default=None)
-        p.add_argument("--range", default=None, choices=list(db.USAGE_RANGES))
-        if name == "inventory":
-            p.add_argument("--kind", default=None)
-        if name == "export":
-            p.add_argument("--out", default=None)
+    # A flag is registered only on the subcommand that reads it. `--limit` on a
+    # report that ignores it is not a convenience, it is a filter that looks like
+    # it worked: the table comes back whole and nothing says otherwise.
+    for name in ("stats", "plugins", "models", "health"):
+        sub.add_parser(name)
+    for name in ("tools", "skills", "agents", "mcp", "recent"):
+        sub.add_parser(name).add_argument("--limit", type=int, default=None)
+
+    p = sub.add_parser("inventory")
+    p.add_argument("--kind", default=None)
+
+    p = sub.add_parser("export")
+    p.add_argument("--out", default=None)
 
     p = sub.add_parser("show")
     p.add_argument("kind", choices=["tool", "skill", "agent", "model"])
