@@ -725,7 +725,20 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
                 "row pushed")
 
     async def test_a_plugin_page_row_opens_no_second_screen(self):
-        """`PluginScreen` is a leaf: its rows are calls, not entities to route."""
+        """`PluginScreen` is a leaf: its rows are calls, not entities to route.
+
+        The fixture plugin has no attributed call until this case writes one, and
+        an empty page would make the assertion true for the wrong reason -- a leaf
+        with no rows proves nothing routes to it.
+        """
+        conn = self.t.conn()
+        conn.execute("INSERT INTO plugin_usage(plugin, kind, target, session_id,"
+                     " project, ts) VALUES('demo-plugin','skill','demo-skill',"
+                     "'s1','/work/demo',?)",
+                     (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(140, 40)) as pilot:
             await self._tab(app, pilot, "plugins")
@@ -733,6 +746,10 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, TUI.PluginScreen,
                                   f"plugins tab did not route to a plugin page: "
                                   f"{[type(s).__name__ for s in app.screen_stack]}")
+            page = self._table(app, "plugin-table")
+            keys = [k.value for k in page.rows]
+            self.assertTrue(any(k and "\t" in k for k in keys),
+                            f"the plugin page has no keyed row to select: {keys}")
             depth = len(app.screen_stack)
             await self._open(app, pilot, "plugin-table")
             self.assertEqual(

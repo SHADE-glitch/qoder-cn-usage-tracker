@@ -90,3 +90,30 @@ Evidence L0 2026-10-12 `test_tui.py::ChromeTest` pins both shape facts.
 Cost     The look-alike claim is now checked rather than asserted. Only taste is at stake — the
          change is discardable on a Textual upgrade.
 Commit   8434247
+
+### D-005 · 2026-10-13 · fix
+Symptom  Two defects on the second drill-down level, both invisible because every existing case
+         pushed the screen it wanted to see instead of driving a row selection. (1)
+         `TrackerApp.on_data_table_row_selected` answered for **every** `DataTable`, including the
+         tables of pushed screens, whose row keys mean something else there: a call id was read as
+         an entity name, so Enter on a call row opened its detail and then an empty
+         `HistoryScreen("tool", "<call id>")` on top of it — the detail was never what the user saw,
+         and the model response list's rows routed to a second response list named after a message
+         id. (2) `ModelResponsesScreen` filled its table with `key_index=11` *and* one-element
+         `key_rows`, but `key_index` indexes the key source, not the rendered row, so every
+         non-empty response list raised `IndexError` on mount.
+Change   The tab router answers only for the tables in its own `WIDE_TABLES`;
+         `ModelResponsesScreen` owns its rows and opens the call detail. `RowRoutingTest` drives
+         `action_select_cursor` (Enter on a row) through three routings, one of which selects a
+         plugin page row and asserts the leaf pushes nothing — with a keyed row inserted first,
+         because an empty page would make a leaf assertion true for the wrong reason. A structural
+         case enumerates the `Screen` hosts that own a table and fails on any that neither handles
+         the selection nor declares itself a leaf, so a fifth screen cannot inherit the bug.
+Evidence L0 2026-10-13 269 tests OK (3.11.15 / 3.13.14 / 3.14.4). Provoked on a throwaway copy: with
+         the router guard removed, three cases fail (history, response, plugin leaf); with the
+         response screen's handler removed, the response case and the structural case fail; with
+         `key_index=11` restored, the response case errors on the fill.
+Cost     A pushed screen that wants its rows to do something must now say so in source. The bug
+         class it prevents was two commits deep: the same `_fill_wide` serves tabs and screens, so
+         one shared key vocabulary silently meant two different things.
+Commit   c26710a
