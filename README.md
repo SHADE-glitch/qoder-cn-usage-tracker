@@ -241,7 +241,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 265 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 269 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -259,8 +259,9 @@ this repository reaches the network.
 | `test_snapshots.py` | 13 | the destructive step's way back: the snapshot is taken *before* the change, it is an online backup rather than a byte copy of a file whose committed rows are still in the `-wal`, a restore keeps the state it overwrote, and retention prunes only what it made |
 | `test_config.py` | 16 | the settings layer: defaults, file, environment precedence and bounds, a broken file that names its path, and the keys `qcut health` prints |
 | `test_privacy.py` | 9 | an import allowlist over the production scripts, a fingerprint proving the source tree is untouched, a sentinel scan across every text column, and a positive control |
-| `test_tui.py` | 41 | tab wiring through Textual's own `run_test` harness, per-tab ranges, the Plugins tab's missing window, the column plan, empty states, drill-down, the `—`/`-`/number distinction on both measure axes, the plain tab titles and the
-| default canvas colour, and a status line that is *on screen* rather than merely holding text |
+| `test_tui.py` | 45 | tab wiring through Textual's own `run_test` harness, per-tab ranges, the Plugins tab's missing window, the column plan, empty states, drill-down, the `—`/`-`/number distinction on both measure axes, the plain tab titles and the default canvas colour, which screen owns the rows of
+| its own table (a pushed screen's row must not be routed twice), and a status line
+| that is *on screen* rather than merely holding text |
 | `test_dispatcher.py` | 9 | `bin/qcut` routing, flag pass-through, and the failure modes that are the reason it is bash |
 | `test_format_registry.py` | 10 | an AST mirror of the format registry against the parser beside it: every field read is registered, every registered field is still read, the dispatch chain and the registry claim the same record types, and no separator, path segment or tool name is typed at a call site |
 | `test_maintenance_docs.py` | 10 | the generated format document equals what `qcut format` prints today, every maintenance asset is reachable from the router, every link resolves, and the CI matrix pins the floor `pyproject.toml` actually declares |
@@ -284,7 +285,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 265 tests above |
+| `scripts/tests/` | the 269 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

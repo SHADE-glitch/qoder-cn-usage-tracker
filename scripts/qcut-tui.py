@@ -1226,11 +1226,28 @@ class ModelResponsesScreen(WideTableMixin, Screen):
                                        r["cache_miss_tokens"],
                                        r["cache_creation_tokens"]),
                         r["call_id"]])
-        # `call_id` doubles as the row key, so a response row opens its own
-        # detail without spending a column on the id.
+        # The key is the call id, taken from `key_rows` and not from the rendered
+        # cell: a message id is capped on screen like any other value, and two
+        # responses whose ids share a prefix must still route apart. `key_index`
+        # therefore indexes *key_rows* (one value per row), not the 12th column.
         self._fill_wide("resp-table", out, "no responses in this window",
-                        key_index=11, key_kind="model",
+                        key_index=0, key_kind="model",
                         key_rows=[[r["call_id"]] for r in rows])
+
+    def on_data_table_row_selected(self, event) -> None:
+        """A response row opens that response; the tab router no longer sees it.
+
+        The key is `model\\t<message id>`, which the app's router would read as a
+        *model named after a message id*. Owning the event here is what keeps the
+        single-call detail reachable from this screen.
+        """
+        if event.data_table.id != "resp-table":
+            return
+        key = event.row_key.value
+        if not key or "\t" not in key:
+            return
+        _kind, _, message_id = key.partition("\t")
+        self.app.push_screen(CallScreen("model", message_id, self.model))
 
     @staticmethod
     def _hit_rate(hit, miss, write) -> str:
@@ -2259,6 +2276,16 @@ class TrackerApp(WideTableMixin, App):
                 self._open_date_range(pane)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # This router belongs to the tab panes and to nothing else. Every table in
+        # the app is filled through the same `_fill_wide`, so a pushed screen's row
+        # keys carry the same `<kind>\t<value>` shape — and routing one here opens
+        # the wrong thing: a call id was being read as an entity name, which pushed
+        # an empty `HistoryScreen` (or a second `PluginScreen`) *on top of* the
+        # detail the user had just asked for. Textual bubbles the event here after
+        # the owning screen has handled it, so the table's identity is the only
+        # thing that can tell the two apart.
+        if event.data_table.id not in self.WIDE_TABLES:
+            return
         key = event.row_key.value
         if not key:
             return

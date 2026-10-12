@@ -647,6 +647,124 @@ class DrilldownTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("demo-plugin", head)
 
 
+
+class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
+    """A row's key means different things on a tab and inside a pushed screen.
+
+    Every table is filled through `_fill_wide`, so all of them key rows with the
+    same `<kind>\t<value>` shape — and on the History screen the value is a *call
+    id*, on the response screen a *message id*. The tab router used to read those
+    as entity names too, so the event the owning screen had already handled was
+    routed a second time: an empty `HistoryScreen("tool", "call-aaa")` landed on
+    top of the detail that was just opened, and a model's response list opened a
+    second response list named after a message id. These cases drive the real
+    gesture (`action_select_cursor`, i.e. Enter on a row) rather than pushing the
+    screen they want to see, because pushing it is what let the bug through.
+    """
+
+    async def asyncSetUp(self):
+        self.t = build_db(self)
+
+    def _table(self, app, table_id):
+        # From the active screen, not from the app: `App.query` resolves against
+        # the base `Screen(id='_default')`, so a table on a pushed screen is not
+        # reachable that way -- and a case that "found" it would have been reading
+        # a different screen's widget.
+        return app.screen.query_one(f"#{table_id}")
+
+    async def _open(self, app, pilot, table_id, row=0):
+        table = self._table(app, table_id)
+        table.move_cursor(row=row)
+        await pilot.pause()
+        table.action_select_cursor()
+        await pilot.pause()
+        await pilot.pause()
+
+    async def _tab(self, app, pilot, pane):
+        # Click the tab, do not set `TabbedContent.active`: a hidden pane's table
+        # has no cursor coordinate, so `action_select_cursor` on it is a no-op and
+        # the case would pass without ever routing anything.
+        from textual.widgets import TabbedContent
+        app.query_one(TabbedContent).active = pane
+        await pilot.pause()
+        await pilot.pause()
+
+    async def test_a_history_row_opens_the_call_detail_and_nothing_on_top(self):
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "tools")
+            await self._open(app, pilot, "tools-table")
+            self.assertIsInstance(app.screen, TUI.HistoryScreen)
+            depth = len(app.screen_stack)
+            await self._open(app, pilot, "hist-table")
+            self.assertIsInstance(
+                app.screen, TUI.CallScreen,
+                f"Enter on a call row did not leave the detail on top: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
+            self.assertEqual(
+                len(app.screen_stack), depth + 1,
+                "the tab router pushed a second screen over the detail: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
+
+    async def test_a_response_row_opens_that_response(self):
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "tokens")
+            await self._open(app, pilot, "tokens-table")
+            self.assertIsInstance(app.screen, TUI.ModelResponsesScreen)
+            await self._open(app, pilot, "resp-table")
+            top = app.screen
+            self.assertIsInstance(
+                top, TUI.CallScreen,
+                f"a response row routed to {type(top).__name__} instead of the "
+                f"call detail: {[type(s).__name__ for s in app.screen_stack]}")
+            self.assertEqual(
+                [type(x).__name__ for x in app.screen_stack],
+                ["Screen", "ModelResponsesScreen", "CallScreen"],
+                "the second drill-down level is not the only screen the response "
+                "row pushed")
+
+    async def test_a_plugin_page_row_opens_no_second_screen(self):
+        """`PluginScreen` is a leaf: its rows are calls, not entities to route."""
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "plugins")
+            await self._open(app, pilot, "plugins-table")
+            self.assertIsInstance(app.screen, TUI.PluginScreen,
+                                  f"plugins tab did not route to a plugin page: "
+                                  f"{[type(s).__name__ for s in app.screen_stack]}")
+            depth = len(app.screen_stack)
+            await self._open(app, pilot, "plugin-table")
+            self.assertEqual(
+                len(app.screen_stack), depth,
+                f"a plugin page row routed to {type(app.screen).__name__}: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
+
+    def test_every_pushed_table_routes_itself_or_is_a_leaf(self):
+        """A new screen with a table must decide, in source, who routes its rows.
+
+        Checked off the class objects rather than a typed list: `WIDE_TABLES` is
+        what the tab router allows, so a screen that mounts a table and names no
+        handler and no leaf status is a screen whose rows would be routed by the
+        tab router again.
+        """
+        tab_tables = set(TUI.TrackerApp.WIDE_TABLES)
+        for name, obj in vars(TUI).items():
+            if not (isinstance(obj, type) and issubclass(obj, TUI.Screen)
+                    and obj is not TUI.Screen):
+                continue
+            own = obj.__dict__.get("WIDE_TABLES")
+            if not own:
+                continue
+            handled = "on_data_table_row_selected" in obj.__dict__
+            self.assertTrue(
+                handled or set(own) <= tab_tables or name in LEAF_SCREENS,
+                f"{name} owns table(s) {sorted(own)} with no selection handler "
+                f"and no leaf declaration -- its rows would reach the tab router")
+
+
+LEAF_SCREENS = frozenset({"PluginScreen", "CallScreen"})
+
 class StatusLineTest(unittest.IsolatedAsyncioTestCase):
     async def test_the_status_line_counts_what_is_indexed(self):
         t = build_db(self)

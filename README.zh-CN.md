@@ -205,7 +205,7 @@ sync_secs = 30       # TUI 自动同步周期
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 265 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 269 tests ... OK
 ```
 
 测试套件是 `unittest`（`pytest` 也能发现它们）。其中两套需要安装 `textual`：`test_tui.py`，以及 `test_config.py`——后者的接线用例会把 TUI 模块加载起来，用以证明每个设置项真的到达渲染器。每个套件都在临时目录里自建一次性数据库**以及**一次性 Qoder 目录树——你真实的 `usage.db` 与 `~/.qoder-cn` 从不会被打开，仓库中也没有任何代码路径会访问网络。
@@ -218,7 +218,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 265 tests ... OK
 | `test_snapshots.py` | 13 | 破坏性步骤的回退之路：快照在改动**之前**取、是在线备份而非把还在 `-wal` 里的主文件按字节拷贝、restore 保留它覆盖掉的状态，以及回收只删自己生成的文件 |
 | `test_config.py` | 16 | 设置层：默认值、文件、环境优先级与边界、损坏文件指名路径、`qcut health` 打印的键 |
 | `test_privacy.py` | 9 | 生产脚本的导入白名单、证明源目录未被改写的指纹、跨所有文本列的哨兵串扫描，以及正向对照 |
-| `test_tui.py` | 41 | 用 Textual 自带 `run_test` 验证标签接线、每标签独立范围、插件页无窗口、列计划、空状态、下钻、两根度量轴上 `—`/`-`/数字的三态区分、标签名与画布底色这两条外观约定，以及**真正显示在屏幕上**（而非仅仅存有文本）的状态行 |
+| `test_tui.py` | 45 | 用 Textual 自带 `run_test` 验证标签接线、每标签独立范围、插件页无窗口、列计划、空状态、下钻、两根度量轴上 `—`/`-`/数字的三态区分、标签名与画布底色这两条外观约定、**每个页面自己的表格由谁路由**（被推入的页面的行不得被路由两次），以及**真正显示在屏幕上**（而非仅仅存有文本）的状态行 |
 | `test_dispatcher.py` | 9 | `bin/qcut` 路由、参数透传，以及它之所以用 bash 的那些失败模式 |
 | `test_format_registry.py` | 10 | 用 AST 把格式登记表与它旁边的解析器互为镜像：读到的字段必须登记、登记的字段必须仍在读、分发链与登记表声称认领同一组记录类型，且分隔符 / 路径段 / 工具名都不许在调用点手打 |
 | `test_maintenance_docs.py` | 10 | 生成的格式文档等于 `qcut format` 今天打印的内容、每个维护资产都能从路由文档抵达、每条链接都能解析，以及 CI 矩阵钉住的正是 `pyproject.toml` 声明的下限 |
@@ -239,7 +239,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-sync.py` | 转录解析器与增量索引器（`--full`、`--quiet`） |
 | `scripts/qcut-stats.py` | 无头报表 |
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
-| `scripts/tests/` | 上述 265 个用例 |
+| `scripts/tests/` | 上述 269 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |
