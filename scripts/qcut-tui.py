@@ -187,14 +187,14 @@ CUSTOM_RANGE = "custom"
 # --- tabs ------------------------------------------------------------------
 
 TABS = (
-    ("dashboard", "🧭 Dashboard"),
-    ("tools", "🧰 Tools"),
-    ("skills", "🎯 Skills"),
-    ("agents", "🤖 Agents"),
-    ("plugins", "🧩 Plugins"),
-    ("mcp", "🔌 MCP"),
-    ("tokens", "🔢 Tokens"),
-    ("usage", "📊 Usage"),
+    ("dashboard", "Dashboard"),
+    ("tools", "Tools"),
+    ("skills", "Skills"),
+    ("agents", "Agents"),
+    ("plugins", "Plugins"),
+    ("mcp", "MCP"),
+    ("tokens", "Tokens"),
+    ("usage", "Usage"),
 )
 # Every tab is one of two shapes: a *summary page* (a stack of bordered panels)
 # or a *note line plus one table*. Declared as data because three things read
@@ -1329,7 +1329,6 @@ class TrackerApp(WideTableMixin, App):
     """The eight-tab Qoder CN usage UI."""
 
     CSS = """
-    Screen { background: $surface; }
     #topbar { dock: top; }
     TabbedContent { height: 1fr; }
     .colnote { padding: 0 1; color: $text-muted; height: auto; display: none; }
@@ -1338,7 +1337,7 @@ class TrackerApp(WideTableMixin, App):
        dock lands on the same row and is painted over — which hid the unclaimed
        count, the schema version and the database path behind the footer. In
        normal flow the bar takes the row directly above the footer. */
-    #status { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
+    #status { height: 1; color: $text-muted; padding: 0 1; }
     /* Summary pages (Dashboard + Usage). Both share .usage-panel and
        .panel-title. The Usage page has one .summary-panels row (height capped,
        scrolling internally so its table below keeps its rows). The Dashboard is

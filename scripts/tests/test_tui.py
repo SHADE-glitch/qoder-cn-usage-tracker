@@ -884,3 +884,29 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChromeTest(unittest.TestCase):
+    """The tab strip and the canvas are the two things every glance touches.
+
+    Both were qcut inventions here: the tab titles carried an emoji each that the
+    reference UI never had, and the app repainted the whole `Screen` with
+    `$surface` plus the status line with `$panel`. Neither is a rendering
+    preference the tests could previously see, so both are pinned as shape
+    promises -- an emoji in a title is a character, and a background rule is
+    text in `CSS`.
+    """
+
+    def test_tab_titles_are_plain_names(self):
+        for tid, title in TUI.TABS:
+            self.assertEqual(title, title.encode("ascii", "replace").decode(),
+                             f"tab {tid!r} has a non-ASCII character in its title")
+            self.assertEqual(title, title.strip(),
+                             f"tab {tid!r} title is padded")
+
+    def test_the_app_defines_no_screen_background(self):
+        css = TUI.TrackerApp.CSS
+        self.assertNotIn("Screen {", css,
+                         "the app overrides the canvas background")
+        self.assertNotIn("background: $surface", css)
+        self.assertNotIn("background: $panel", css)
