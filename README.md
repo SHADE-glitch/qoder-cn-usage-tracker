@@ -119,7 +119,7 @@ numbers, and it was measured on this machine rather than assumed:
 | Qoder's own (`qfmodel`, `qmodel*`, `auto`) | **credits** (+ `original_credits`, `billable`) | any token count — `input`/`output`/`cache` arrive as a literal `0` |
 | A BYOK route (`qoder-custom-<id>/<model>`) | **tokens** (`input`, `output`, `cache read`) | credits — the `credits` field is **absent**, so it is stored NULL |
 
-Measured on the 29,628 responses indexed here today: 29,557 of the first kind, 71
+Measured on the 30,478 responses indexed here today: 30,407 of the first kind, 71
 of the second, and not one row that does both.
 
 So a model that bills in credits reports zeros for tokens, and a BYOK model
@@ -302,6 +302,15 @@ Both paths are overridable for a sandboxed install: `QCUT_SCRIPTS` and
 - 💳 **Token totals cover BYOK traffic only** on a machine that mostly uses
   Qoder's own routes — see [Credits vs tokens](#-credits-vs-tokens). That is a
   property of what Qoder writes, not a gap in the reader.
+- ⏱️ **Three columns the reference UI has cannot exist here, and no placeholder is
+  invented for them.** A model response carries one timestamp and no start/end pair,
+  so **per-request duration** cannot be computed — `model_calls` has no duration
+  column at all (tool, skill, agent and MCP rows do, paired from their results).
+  Qoder writes no **HTTP status** per request either. And credits are never shown as
+  **money**: the transcripts carry a credit amount and no price, so a currency
+  figure would be arithmetic on a constant this tool made up. These are absences in
+  what Qoder records, not gaps in the reader; a column of dashes would read as data
+  that merely happened to be missing.
 - 📅 **No custom date range yet.** The range selector offers the seven windows
   above; a picker for an arbitrary start/end is the next thing worth adding.
 - 🔄 Sync is manual (or via the optional systemd timer); there is no live hook.
