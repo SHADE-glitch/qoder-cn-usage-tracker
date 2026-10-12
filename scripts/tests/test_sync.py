@@ -195,6 +195,36 @@ class EntityClassificationTest(unittest.TestCase):
         self.assertEqual(row["skill"], "playwright-cli")
         self.assertEqual(row["status"], "completed")
 
+    def test_a_skill_named_in_the_command_argument_is_still_recorded(self):
+        """`_classify` reads `skill` *or* `command` — the alias branch, which is a
+        claimed part of the format and so needs a case that goes through it.
+
+        Without this, a Qoder that stops sending `skill` and sends only `command`
+        would empty the Skills tab while every test stayed green.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "Skill", command="playwright-cli")]),
+            tool_result("r1", "c1", kind="completed"),
+        ])
+        self.t.sync()
+        row = self.t.one("SELECT * FROM skill_usage")
+        self.assertEqual(row["skill"], "playwright-cli")
+        self.assertEqual(row["status"], "completed")
+
+    def test_a_skill_argument_that_is_not_the_catalog_name_is_ignored(self):
+        # The other half of the alias: an unrelated `command` on a non-Skill call
+        # must not be read at all, so a Bash command line never reaches a column.
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "Bash", command="rm -rf /SENTINEL-NOT-STORED")]),
+        ])
+        self.t.sync()
+        self.assertEqual(self.t.rows("SELECT * FROM skill_usage"), [])
+        row = self.t.one("SELECT * FROM tool_calls")
+        self.assertEqual(row["tool_name"], "Bash")
+        self.assertEqual(row["category"], "builtin")
+
     def test_a_plugin_qualified_skill_is_credited_to_its_plugin(self):
         self.t.write("projects/-work-demo/s1.jsonl", [
             assistant("s1", "m1", content=[
@@ -247,6 +277,17 @@ class EntityClassificationTest(unittest.TestCase):
         row = self.t.one("SELECT * FROM mcp_usage")
         self.assertEqual((row["server"], row["tool"], row["admin_op"]),
                          ("srv", "do_thing", "get"))
+
+    def test_an_mcp_target_in_the_snake_case_argument_is_also_split(self):
+        """`toolName` *or* `tool_name` — the second is read, so it must be proven."""
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "mcp_call", tool_name="mcp__builtin__get_table")]),
+        ])
+        self.t.sync()
+        row = self.t.one("SELECT * FROM mcp_usage")
+        self.assertEqual((row["server"], row["tool"], row["admin_op"]),
+                         ("builtin", "get_table", "call"))
 
     def test_a_free_text_argument_is_never_stored(self):
         """The agent `description`/`prompt` is prose; only the catalog name is kept."""

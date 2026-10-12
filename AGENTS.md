@@ -59,7 +59,12 @@ missing package, not a Python-version failure — do not read it as one.
 - **Metadata only, never content.** Only structured metadata fields are read:
   counts, timings, statuses, tokens, credits, identifiers. Prompt/response text
   and tool argument *values* are never stored — the only argument names ever read
-  are the catalog ones (`skill`, `subagent_type`, `agent_type`, `toolName`).
+  are the catalog ones registered in `TOOL_ARG_FIELDS` (`skill` and its `command`
+  alias, `subagent_type` and `agent_type`, `toolName` and its `tool_name` alias).
+  The two aliases are each half of a real branch: a Skill call that names itself
+  only in `command`, or an MCP target only in `tool_name`, must still be recorded —
+  and `test_sync.py` has a case that goes through each branch rather than only
+  through the preferred spelling.
   Enforced by `test_privacy.py::MetadataOnlyTest`, a sentinel fed into every slot
   the parser reads and scanned across **every text column of every table**, with a
   positive control so the scan cannot pass on a database that indexed nothing.
@@ -188,6 +193,21 @@ Two defenses, and both are mechanical:
 `qcut format --write`, change the registry and the handler **in the same commit**,
 and re-index into a throwaway database (`QCUT_DB=/tmp/…`) before touching a real
 one. `AGENTS.md` does not list the fields — the registry does.
+
+Three checks keep that claim from going rhetorical, and all three read the source
+rather than trusting prose (`test_format_registry.py`, `test_maintenance_docs.py`):
+
+- the registry and the parser are locked **both ways** — a field read without being
+  registered fails, and a registered field the parser no longer reads fails too;
+- `docs/maintenance/qoder-format.md` must equal what `qcut format` prints right now,
+  so a registry change that skipped `--write` is caught by the suite, not by luck;
+- layout values, separators and tool names may not be re-typed at a call site, and
+  every registry constant must actually be used — a declared-but-unused constant is
+  the same false claim as a listed-but-unread field.
+
+The sets a handler *branches on* are checked too: `CLAIMED_RECORD_TYPES` must equal
+the record types the dispatch chain names, or a type counts as parsed while nothing
+reads it (which is how `system` sat in the wrong set).
 
 ## Verification tiers
 

@@ -69,6 +69,38 @@ One entry per released change, newest first.
 - `docs` A new `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` pair: where to re-measure,
   which command produces which number, and what to do when a panel goes empty.
 
+**Guards added (and what they found on the first run)**
+
+- `guard` `test_format_registry.py` locks the registry at the top of
+  `qcut-sync.py` to the parser **in both directions**: a field read without being
+  registered fails, and a registered field nobody reads fails. Layout values,
+  separators and tool names may no longer be re-typed at a call site, and a
+  registry constant that nothing uses is itself a failure.
+- `fix` The registry went on being believed while drifting: **16 listed fields were
+  never read** (`uuid`, `parentUuid`, `userType`, `modelSource`, `subtype`,
+  `stop_sequence`, `role`, `exitCode`, `durationMs`, `signal`, `interrupted`,
+  `timedOut`, `isImage`, `agentType`, `status`, `sourceToolAssistantUUID`) —
+  including `durationMs`, which the parser does *not* use: duration is computed
+  from the row's own start timestamp. Three names the parser **does** read were
+  missing: the `command` alias of `skill`, the `tool_name` alias of `toolName`, and
+  the `text` content block. `system` sat in `CLAIMED_RECORD_TYPES` with no branch,
+  which reads as "parsed"; it is now in the dropped set, where it belongs.
+  `DIR_PLUGINS` was declared and never used.
+- `guard` Those two aliases are a real branch, not a spelling: a Skill call that
+  names itself only in `command`, or an MCP target only in `tool_name`, was
+  recorded by code no test ever entered. `test_sync.py` now has a case going
+  through each, plus one asserting an unrelated `command` value on a non-Skill call
+  still reaches no column.
+- `guard` `test_maintenance_docs.py` requires
+  `docs/maintenance/qoder-format.md` to equal what `qcut format` prints at that
+  moment, the routers to resolve (relative links checked against the document's own
+  directory, not the repo root), no orphaned maintenance asset, CI to pin the floor
+  `pyproject.toml` declares, both ends of the matrix to be documented in both
+  READMEs, and `baseline.md` to carry its measurement date.
+- `fix` The generated format document told the reader to "see docs/maintenance/"
+  while sitting inside `docs/maintenance/`. It now links the router that names the
+  regeneration command.
+
 ## [0.1.0] — 2026-10-12
 
 First release. `qcut` indexes the transcripts Qoder CN already writes and shows

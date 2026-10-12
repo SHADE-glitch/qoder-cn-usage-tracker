@@ -41,7 +41,6 @@ import qcut_db as db  # noqa: E402
 # On-disk layout, all relative to ~/.qoder-cn (``db.QODER_DIR``).
 DIR_PROJECTS = "projects"
 DIR_SKILLS = "skills"
-DIR_PLUGINS = "plugins"
 TRANSCRIPT_GLOB = "**/*.jsonl"
 # A skill is the *parent of a manifest*: skills/<skill>/SKILL.md.
 SKILL_MANIFEST_GLOB = "**/SKILL.md"
@@ -52,10 +51,20 @@ PLUGIN_SUBDIRS = (("skills", "skill"), ("agents", "agent"), ("commands", "comman
 PLUGIN_INDEX_FILES = ("plugins/installed_plugins_v2.json", "plugins/installed_plugins.json")
 PLUGIN_MARKETPLACE_SEP = "@"
 PLUGIN_INDEX_PLUGIN_KEY = "plugins"
+# A directory entry starting with this is not an inventory item. This is a POSIX
+# convention, not a Qoder one, and it is registered because the guard treats every
+# literal passed to a naming method as a format claim it must be able to name.
+HIDDEN_NAME_PREFIX = "."
+# `Skill` may be invoked as "<plugin>:<skill>"; the part before the separator
+# names the owning plugin.
+SKILL_PLUGIN_SEP = ":"
 
 # A transcript is newline-delimited JSON. The same separator decides where an
 # incremental offset may resume: one byte mid-line is a rewritten file.
 TRANSCRIPT_LINE_SEP = b"\n"
+# Timestamps are ISO-8601 with a trailing `Z` for UTC; `_parse_ts` turns that into
+# an explicit offset. Registered because a change here silently nulls every `ts`.
+TRANSCRIPT_TS_UTC_SUFFIX = "Z"
 
 # Tool names that carry meaning for classification (see ``_classify``).
 SKILL_TOOL = "Skill"
@@ -79,14 +88,16 @@ CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
 # runs to tens of thousands of records, and quietly counting them as "unparsed"
 # would make the signal useless.
 CLAIMED_RECORD_TYPES = frozenset({
-    "assistant", "user", "runtime-config", "workspace-directories", "system",
+    "assistant", "user", "runtime-config", "workspace-directories",
 })
 NOOP_RECORD_TYPES = frozenset({
     "active-leaf", "attachment", "file-history-snapshot", "last-prompt",
-    "custom-title", "worktree-state",
+    "custom-title", "worktree-state", "system",
 })
 # `last-prompt` and `custom-title` carry free prose (the user's own prompt and
-# the AI-written title). They are claimed and dropped, never read.
+# the AI-written title). They are claimed and dropped, never read. `system` is
+# dropped too: it has no branch, and a type in CLAIMED with no handler is the
+# one mistake this split exists to prevent — it would read as "parsed".
 
 # --- classification tables -------------------------------------------------
 
@@ -128,16 +139,30 @@ VENDOR_HOSTS = {
 }
 
 # --- field mirrors: the record shape we read, by object --------------------
+#
+# These sets are a *claim about the parser*, and `test_format_registry.py` reads
+# the AST both ways to keep them honest: a field read without being listed fails,
+# and a field listed but never read fails too. Sixteen of the names that used to
+# sit here (`uuid`, `parentUuid`, `exitCode`, `durationMs`, …) were fields Qoder
+# does send that this parser never looks at — plausible, harmless, and a registry
+# that overstates its own surface is one that stops being re-checked on a rename.
+# An observed-but-unused field belongs in a comment, not in the dependency list.
 
 RECORD_FIELDS = frozenset({
-    "type", "uuid", "timestamp", "message", "parentUuid", "isSidechain", "cwd",
-    "sessionId", "userType", "entrypoint", "version", "gitBranch",
-    "customProviderId", "modelSource", "toolUseResult", "sourceToolAssistantUUID",
-    "subtype", "directories",
+    "type", "timestamp", "message", "isSidechain", "cwd", "sessionId",
+    "entrypoint", "version", "gitBranch", "customProviderId", "toolUseResult",
+    "directories",
+    # `runtime-config` names the session's model at the *top* level, not inside
+    # `message`, so the same key is read off two different objects.
+    "model",
 })
 MESSAGE_FIELDS = frozenset({
-    "id", "type", "role", "model", "stop_reason", "stop_sequence", "content", "usage",
+    "id", "type", "model", "stop_reason", "content", "usage",
 })
+# The text block of a message — the only place a slash-command name can appear.
+# Reading the block's *text* is not metadata: only the string inside the
+# `<command-name>` marker is kept, which is what `CMD_RE` matches.
+TEXT_BLOCK_FIELDS = frozenset({"type", "text"})
 USAGE_FIELDS = frozenset({
     "input_tokens", "output_tokens",
     "cache_read_input_tokens", "cache_creation_input_tokens",
@@ -145,27 +170,45 @@ USAGE_FIELDS = frozenset({
 })
 TOOL_USE_FIELDS = frozenset({"type", "id", "name", "input"})
 TOOL_RESULT_FIELDS = frozenset({"type", "tool_use_id", "content", "is_error"})
-TOOL_RESULT_META_FIELDS = frozenset({
-    "kind", "exitCode", "signal", "interrupted", "isError", "durationMs",
-    "agentType", "commandName", "status", "timedOut", "isImage",
-})
+# `stop_reason` and `isError` are read; the rest of what Qoder puts in
+# `toolUseResult` (exitCode, signal, interrupted, timedOut, isImage, agentType,
+# status, durationMs) is ignored — duration in particular is computed from the
+# row's own start timestamp, not from `durationMs`, so a result that lands after
+# its call was indexed still pairs up.
+TOOL_RESULT_META_FIELDS = frozenset({"kind", "isError", "commandName"})
 # Tool *argument names*. Reading a name is metadata; reading its value is the
 # privacy line, and only these are ever stored — the skill name, the agent type
 # and the MCP target, all of which are catalog entries rather than prose.
-TOOL_ARG_FIELDS = frozenset({"skill", "subagent_type", "agent_type", "toolName"})
+# `command` and `tool_name` are the snake_case aliases the same two tools answer
+# to, so they are read as often as `skill` / `toolName`.
+TOOL_ARG_FIELDS = frozenset({"skill", "command", "subagent_type", "agent_type",
+                             "toolName", "tool_name"})
 # JSON keys of the non-transcript files we read: the inventory files plus
 # settings.json (whose providers[].baseUrl gives a custom route its vendor).
 INVENTORY_JSON_FIELDS = frozenset({
     "mcpServers", "plugins", "installPath", "version", "source", "providers", "baseUrl",
 })
 
-QODER_FIELDS = (RECORD_FIELDS | MESSAGE_FIELDS | USAGE_FIELDS | TOOL_USE_FIELDS
+QODER_FIELDS = (RECORD_FIELDS | MESSAGE_FIELDS | TEXT_BLOCK_FIELDS
+                | USAGE_FIELDS | TOOL_USE_FIELDS
                 | TOOL_RESULT_FIELDS | TOOL_RESULT_META_FIELDS | TOOL_ARG_FIELDS
                 | INVENTORY_JSON_FIELDS)
 
 # qcut's own vocabulary in the ``unparsed`` table — NOT Qoder fields.
 UNPARSEABLE_LINE = "unparseable_line"
 MISSING_TYPE = "type:<missing>"
+# Keys of dicts *qcut* builds and reads: its `sync_state` columns, its
+# inventory-side plugin→skill map, and `run()`'s result. They are listed because
+# the format mirror cannot tell an upstream dependency from an internal key by
+# itself, and a literal read that matches neither set must fail the guard — the
+# day a handler starts doing `rec.get("file_path")` on a transcript, that is a
+# new dependency on upstream data and belongs in the *_FIELDS sets above.
+# Like the mirror sets, this one's consumer is `test_format_registry.py`.
+QCUT_INTERNAL_KEYS = frozenset({
+    "skill_owner",
+    "file_path", "offset", "size", "mtime",
+    "counts", "seconds", "db",
+})
 
 
 # --- small helpers ---------------------------------------------------------
@@ -187,8 +230,8 @@ def _parse_ts(value):
     if not isinstance(value, str) or not value:
         return None
     text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
+    if text.endswith(TRANSCRIPT_TS_UTC_SUFFIX):
+        text = text[:-len(TRANSCRIPT_TS_UTC_SUFFIX)] + "+00:00"
     try:
         from datetime import datetime
         return int(datetime.fromisoformat(text).timestamp() * 1000)
@@ -330,7 +373,7 @@ def scan_inventory(conn: sqlite3.Connection, qoder_dir) -> dict:
     if skills_dir.is_dir():
         for manifest in skills_dir.glob(SKILL_MANIFEST_GLOB):
             name = manifest.parent.name
-            if not name or name.startswith("."):
+            if not name or name.startswith(HIDDEN_NAME_PREFIX):
                 continue
             conn.execute(
                 "INSERT OR REPLACE INTO inventory(kind,name,owner_plugin,version,path,source)"
@@ -495,7 +538,7 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
         skill = payload or ""
         plugin = None
         if ":" in skill:
-            plugin = skill.split(":", 1)[0]
+            plugin = skill.split(SKILL_PLUGIN_SEP, 1)[0]
         plugin = plugin or skill_owner.get(skill)
         conn.execute(
             "INSERT OR IGNORE INTO skill_usage"
@@ -706,7 +749,8 @@ def format_doc() -> str:
         "# Qoder CN format surface",
         "",
         "Generated by `qcut format`. Everything this tool assumes about Qoder CN's",
-        "own files. Re-verify after a Qoder update; see docs/maintenance/.",
+        "own files. Re-verify after a Qoder update; the procedure is in "
+        "[`MAINTENANCE.md`](../../MAINTENANCE.md).",
         "",
         "## Layout (relative to ~/.qoder-cn)",
         "",
@@ -737,8 +781,11 @@ def format_doc() -> str:
         "",
         "## Classification",
         "",
-        f"- skill tool: `{SKILL_TOOL}` (argument `skill`)",
-        f"- agent tool: `{AGENT_TOOL}` (argument `subagent_type`, default `{DEFAULT_AGENT_TYPE}`)",
+        f"- skill tool: `{SKILL_TOOL}` (arguments "
+        + ", ".join(f"`{a}`" for a in sorted(
+            {"skill", "command"} & TOOL_ARG_FIELDS)) + ")",
+        f"- agent tool: `{AGENT_TOOL}` (arguments `subagent_type`, `agent_type`"
+        f"; default `{DEFAULT_AGENT_TYPE}`)",
         "- mcp tools: " + ", ".join(f"`{k}` -> {v}" for k, v in sorted(MCP_TOOLS.items())),
         f"- mcp target: `{MCP_TARGET_PREFIX}<server>{MCP_TARGET_SEP}<tool>` in the `toolName` argument",
         f"- custom route: `<providerId>{PROVIDER_MODEL_SEP}<model>`, prefix `{CUSTOM_PROVIDER_PREFIX}`",
