@@ -101,6 +101,26 @@ One entry per released change, newest first.
   while sitting inside `docs/maintenance/`. It now links the router that names the
   regeneration command.
 
+**Indexing**
+
+- `fix` `inventory` duplicated on every sync. The table has no unique key, so the
+  `INSERT OR REPLACE` that writes it never conflicted and simply appended another
+  copy of every installed entry: after three syncs, 35 installed things were 89
+  rows, and `qcut inventory` printed each one three times while `qcut health`
+  reported the inflated count. `scan_inventory()` now clears the table before it
+  re-scans — correct because the table is a snapshot of what is installed *now*,
+  and nothing keys these rows (history lives in the usage tables). An existing
+  database self-heals on its next sync; no rebuild or migration is owed.
+- `guard` The idempotency promise said "repeated syncs must not duplicate rows" and
+  the case that supposedly pinned it looked at two of nine tables — which is
+  exactly how `inventory` stayed broken.
+  `test_repeated_syncs_stabilise_every_table_in_the_schema` now enumerates the
+  tables from `sqlite_master` rather than from a typed list, so a table added
+  later is covered without somebody remembering to add it, and it carries a
+  positive control (`inventory >= 25`) so a scan that indexed nothing cannot pass
+  by comparing two empties. Provoked: with the clear removed it reports
+  `{'inventory': (27, 81)}`; with it in place, three syncs are stable.
+
 ## [0.1.0] — 2026-10-12
 
 First release. `qcut` indexes the transcripts Qoder CN already writes and shows

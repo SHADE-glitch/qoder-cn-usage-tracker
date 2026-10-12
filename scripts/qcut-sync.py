@@ -354,6 +354,13 @@ def scan_inventory(conn: sqlite3.Connection, qoder_dir) -> dict:
     Read-only over small config and manifest files; a missing file is not an
     error (a fresh install has no plugins yet).
     """
+    # The table is a snapshot of what is installed *now*, and it has no unique
+    # key — so the `INSERT OR REPLACE` below never conflicts and cannot collapse
+    # a re-scan: three syncs used to leave 89 rows for 35 entries, and
+    # `qcut inventory` printed each one three times. Clearing first is what makes
+    # this pass idempotent, and it costs nothing, because nothing keys these rows
+    # — history lives in the usage tables, not here.
+    conn.execute("DELETE FROM inventory")
     root = Path(qoder_dir)
     counts = {}
 

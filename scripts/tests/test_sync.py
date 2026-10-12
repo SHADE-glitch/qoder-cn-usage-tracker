@@ -410,6 +410,56 @@ class IncrementalTest(unittest.TestCase):
         self.assertEqual(self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 1)
         self.assertEqual(self.t.one("SELECT COUNT(*) c FROM tool_calls")["c"], 1)
 
+    def test_repeated_syncs_stabilise_every_table_in_the_schema(self):
+        """The promise is "sync is idempotent", and the case above only looked at
+        two of the nine tables.
+
+        `inventory` was the one that broke: it has no unique key, so
+        `INSERT OR REPLACE` never conflicted and each sync appended another copy
+        of every entry — 35 installed things read as 89 rows after three syncs,
+        and `qcut inventory` printed each one three times. The table list here is
+        enumerated from `sqlite_master` rather than typed, so a table added next
+        month is covered by this case without somebody remembering to say so.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[tool_use("c1", "Skill",
+                                                    skill="demo")],
+                      usage=usage(input_tokens=1)),
+            tool_result("r1", "c1", kind="completed"),
+        ])
+        self.t.skill("demo")
+        self.t.json_file("mcp.json", {"mcpServers": {"srv": {"url": "http://x"}}})
+
+        def counts():
+            import re
+            conn = self.t.conn()
+            try:
+                names = [r["name"] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")]
+                keep = [n for n in names if re.fullmatch(r"[a-z_]+", n)]
+                self.assertEqual(len(keep), len(names),
+                                 f"a table name escaped the allowlist: {names}")
+                return {n: conn.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0]
+                        for n in keep}
+            finally:
+                conn.close()
+
+        self.t.sync()
+        first = counts()
+        self.t.sync()
+        self.t.sync()
+        third = counts()
+
+        # Positive control: a scan that indexed nothing would compare empty to
+        # empty and pass, which is how a stability check stops meaning anything.
+        self.assertGreaterEqual(first["inventory"], 25,
+                                "the fixture must populate inventory")
+        self.assertGreaterEqual(first["tool_calls"], 1)
+        grew = {t: (first[t], third[t]) for t in first if first[t] != third[t]}
+        self.assertEqual(
+            grew, {},
+            f"three syncs of unchanged input changed row counts: {grew}")
+
     def test_full_sync_rebuilds_from_scratch(self):
         self.t.write("projects/-work-demo/s1.jsonl", [
             assistant("s1", "m1", usage=usage(input_tokens=1))])
