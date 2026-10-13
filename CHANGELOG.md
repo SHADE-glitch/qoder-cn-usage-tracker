@@ -373,3 +373,47 @@ Cost     One more second of `pilot.pause()` per click pair, and a source-shape r
          complain if someone ever wants two clicks to land together — that has to be a deliberate
          restructuring, not an accident.
 Commit   a4918d6
+
+### D-016 · 2026-10-13 · guard
+Symptom  The tripwire guarded one path. `_hermetic.py` recognised the live `usage.db` and nothing
+         else, so a fixture was free to read `~/.qoder-cn/**` — and a case whose correctness
+         depended on a real transcript was then green on every machine except the one where that
+         file exists, which is the one machine where it needed to be red. The sibling tracker has
+         exactly that shape: a case that opens the developer's plugin-events sidecar, passing in CI
+         because CI has no sidecar and failing at home.
+Change   `PROTECTED_DIRS` carries the host tree beside the database, and the hooks cover three read
+         paths instead of one — `open`, `os.scandir`/`os.listdir` (a glob reaches file contents
+         without ever calling `open`) and `sqlite3.connect`. A child process must pin
+         `QCUT_QODER_DIR` for the reason it must pin `QCUT_DB`: the launcher resolves them
+         independently, so pinning the database left the host as wide open as before.
+         Each refusal ships with the pair that keeps it honest —
+         `test_an_ordinary_test_host_is_left_alone` walks a temp path through the same three hooks
+         and must come back clean, and `test_the_same_child_is_allowed_once_its_paths_are_pinned`
+         is the matched positive for the child refusal.
+Evidence L0 2026-10-13 313 tests OK. Ten cases became thirteen; every new case is paired with a
+         case that must keep passing, so a hook that refuses everything fails the suite rather than
+         passing it.
+Cost     A test that shells out now pins a second variable or it is refused — which is the failure
+         this entry is about, only seen at commit time instead of at review time.
+Commit   c12f980
+
+### D-017 · 2026-10-13 · guard
+Symptom  The eight tab slots are a contract shared with `cbut` and `tcut`, and nothing read it.
+         `test_every_tab_has_its_widget_and_table` asserted the built panes equal
+         `[tid for tid, _ in TUI.TABS]` — and `qcut-tui.py` builds those panes in a loop over that
+         very tuple, so the comparison held for any tab set at all. Deleting `("mcp", "MCP")`, or
+         the tab, left the case green.
+Change   `test_the_eight_tabs_are_present_and_in_order` spells out the eight ids and the eight
+         visible labels and compares the running app against them. Labels are read from the tab bar
+         (`tc.get_tab(id).label_text`) because `TabPane` carries no `label` in Textual 8.2.8 —
+         reading one raises `AttributeError`, and a case that dies on its first line checks nothing.
+         The old assertion is kept, reframed as the one direction it can still catch: a pane built
+         outside the declared tuple.
+Evidence L0 2026-10-13 314 tests OK. Provoked, control green first: dropping `("mcp", "MCP")` from
+         `TABS` turns the new case red; renaming `("usage", "Usage")` to `("usage", "Requests")`
+         turns it red on the label half alone with the other three `TabWiringTest` cases still
+         green — the rename is precisely what the old assertion could not see.
+Cost     Renaming a tab now fails on purpose. That is the cost of the contract being read rather
+         than assumed, and a sibling checkout is not importable from here, so this is the only place
+         it can be read.
+Commit   966ba27
