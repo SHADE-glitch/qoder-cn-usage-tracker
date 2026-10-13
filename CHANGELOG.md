@@ -117,3 +117,48 @@ Cost     A pushed screen that wants its rows to do something must now say so in 
          class it prevents was two commits deep: the same `_fill_wide` serves tabs and screens, so
          one shared key vocabulary silently meant two different things.
 Commit   c26710a
+
+### D-006 · 2026-10-13 · fix
+Symptom  `top_n` was declared in `DEFAULTS`, given an env name and a bound, printed by `qcut health`
+         and documented in both READMEs — and read by nothing. The Dashboard sliced a class constant
+         (`DASH_TOP`), so `QCUT_TOP_N` was a knob the owner could edit for no effect, which is the
+         exact failure this project's settings rule forbids. Two further constants
+         (`USAGE_LOG_LIMIT`, `DETAIL_LIMIT`) had no references at all and duplicated live knobs.
+Change   The three Dashboard sites read `cfg["top_n"]`; the dead constants are deleted.
+         `SettingsHaveConsumersTest` scans both entry scripts' syntax trees for subscripts of a
+         `cfg` host and fails on a declared setting no renderer consults, on a key read that was
+         never declared, and — positive control — when the scanned set is not the shipped knob set.
+Evidence L0 2026-10-13 275 tests OK. Provoked on a throwaway copy: re-pointing the three reads at
+         `cfg["name_cap"]` fails two cases naming `top_n`.
+Cost     A knob cannot ship unhooked again. The scan reads `qcut-tui.py` and `qcut-stats.py` only —
+         a third surface with its own `cfg` host has to be added to `CONSUMERS`.
+Commit   83560fc
+
+### D-007 · 2026-10-13 · fix
+Symptom  `qcut health` — the command reached for when something is wrong — died with a raw
+         `qcut_db.ConfigError` traceback whenever the settings file was malformed and an index
+         already existed. The message inside the exception named the file and the key, but only to
+         someone able to read a stack, and the command's own exit status was lost.
+Change   `cmd_health` catches `ConfigError`, prints `config is not usable: …` to stderr and returns
+         1. The case hides the environment first (`no_settings_env`, now shared from `_helpers`
+         rather than re-typed per suite), because the environment outranks the file and an isolated
+         case would otherwise be asserting someone else's shell.
+Evidence L0 2026-10-13 `test_stats.py::HealthReportTest::test_a_broken_settings_file_is_reported_and_not_raised`.
+         Removing the handler on a copy raises the `ConfigError` out of the case.
+Cost     One more refusal path in the CLI. The traceback still happens for any *other* exception —
+         this handler is scoped to the settings layer's own error type.
+Commit   83560fc
+
+### D-008 · 2026-10-13 · fix
+Symptom  `sync --full` asks whether the index holds anything before deciding to snapshot it, and the
+         predicate counted rows in `sync_state` alone. A database holding usage rows whose offsets
+         were lost — a restored or hand-copied file — read as empty, so the rebuild that deletes
+         those rows took no way back. That state is the one nobody can regenerate: the transcripts
+         may since have moved on.
+Change   `_has_indexed_state` checks the tables `reset` clears (`sync_state`, `model_calls`,
+         `tool_calls`) with `SELECT 1 … LIMIT 1`. It is the helper D-003 wired in; this widens what
+         it calls indexed.
+Evidence L0 2026-10-13 `test_snapshots.py::LostCursorTest`. With the single-table version restored
+         on a copy the case fails: `a rebuild of an index with rows took no snapshot: []`.
+Cost     Three counts instead of one, on a path that runs once per rebuild.
+Commit   83560fc
