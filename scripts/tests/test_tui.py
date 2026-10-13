@@ -311,6 +311,7 @@ class DateRangeTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("January 2027",
                           str(modal.query_one("#dr-cal-month", Static).content))
             await pilot.click("#dr-prev")
+            await pilot.pause()
             await pilot.click("#dr-prev")
             await pilot.pause()
             self.assertIn("November 2026",
@@ -350,6 +351,7 @@ class DateRangeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(modal.query_one("#dr-start-time", Input).value,
                              f"14:{minute}")
             await pilot.click("#dr-end-card .dr-card-title")
+            await pilot.pause()
             await pilot.click("#dr-hour-06")
             await pilot.pause()
             self.assertEqual(modal.query_one("#dr-end-time", Input).value,
@@ -1212,3 +1214,31 @@ class ChromeTest(unittest.TestCase):
                          "the app overrides the canvas background")
         self.assertNotIn("background: $surface", css)
         self.assertNotIn("background: $panel", css)
+
+
+class ClickCadenceTest(unittest.TestCase):
+    """Two `pilot.click` lines with nothing between them are a race, not a test.
+
+    Textual posts a click and works through the resulting message pump at the next
+    pause. Without a pause between two clicks the second can arrive before the first
+    has changed anything, and whether the case passes is then a property of the
+    runner's scheduling — which is exactly how CI's Python 3.11 job failed on the
+    calendar stepper while every local interpreter passed it.
+
+    The check reads this file's own source rather than running the app: a cadence
+    rule that only fires when the timing happens to be unlucky is not a guard.
+    """
+
+    SOURCE = Path(__file__)
+
+    def test_no_two_clicks_are_issued_without_a_pause_between_them(self):
+        lines = self.SOURCE.read_text(encoding="utf-8").splitlines()
+        issued = lambda line: line.strip().startswith("await pilot.click(")
+        offenders = [
+            (index + 1, lines[index].strip(), lines[index + 1].strip())
+            for index in range(len(lines) - 1)
+            if issued(lines[index]) and issued(lines[index + 1])
+        ]
+        self.assertEqual(
+            offenders, [],
+            f"clicks issued with no `await pilot.pause()` between them: {offenders}")

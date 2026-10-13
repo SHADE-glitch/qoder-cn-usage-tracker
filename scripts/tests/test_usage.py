@@ -46,11 +46,25 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(end, 1234567890)
 
     def test_the_window_is_whole_calendar_days_not_rolling_hours(self):
-        """A window is stable through the day — it must not creep with `now`."""
-        now = int(datetime.now().timestamp() * 1000)
-        a, _ = db.window_bounds("7d", now)
-        b, _ = db.window_bounds("7d", now - 3 * 3600 * 1000)
-        self.assertEqual(a, b)
+        """A window is stable through the day, and it moves only at midnight.
+
+        Anchored to fixed hours on purpose. With `datetime.now()` this case was
+        only true while "now minus three hours" stayed inside the same local day:
+        CI ran it at 01:35 UTC, where three hours back is the previous day, and it
+        failed; the same suite passed at 09:35 local on the same commit. The rule
+        did not change, the runner's clock did.
+        """
+        morning, afternoon = db.window_bounds("7d", ms_on(0, 9))[0], \
+            db.window_bounds("7d", ms_on(0, 15))[0]
+        self.assertEqual(morning, afternoon,
+                         "the window crept with the hour inside one day")
+        previous_noon = ms_on(1, 12)
+        across_midnight = db.window_bounds("7d", previous_noon)[0]
+        first, second = (datetime.fromtimestamp(value / 1000).date()
+                         for value in (morning, across_midnight))
+        self.assertEqual(first - second, timedelta(days=1),
+                         "one step of the window is not one calendar day "
+                         f"({first} vs {second})")
 
     def test_every_range_has_a_label(self):
         for key in db.RANGE_ORDER:
