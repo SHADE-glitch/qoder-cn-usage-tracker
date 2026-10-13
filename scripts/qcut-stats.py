@@ -135,11 +135,17 @@ def cmd_stats(conn, args):
     # flattens NULL to 0, so the "no responses here" case has to be named here
     # or it would be drawn as the `—` that means "credits instead of tokens".
     k_tok = not k["requests"] or bool(k["tokens_reported"])
+    o = db.q_overview(conn)
+    # `all time` means the whole index, so the index says how far it reaches:
+    # a stopped cursor and an idle week both print as a quiet week otherwise.
+    span = "-" if not (o["first_ts"] or o["last_ts"]) \
+        else f"{ts(o['first_ts'])} .. {ts(o['last_ts'])}"
     lines = [
         "Qoder CN usage — all time",
         "",
         f"  sessions indexed     {fmt_n(k['model_sessions'] or k['tool_sessions'])}",
         f"  projects             {fmt_n(k['tool_projects'] or k['model_projects'])}",
+        f"  range                {span}",
         "",
         f"  model requests       {fmt_n(k['requests'])}",
         f"  input tokens         {fmt_tok(k['input_tokens'], k_tok)}",
@@ -284,10 +290,14 @@ def _fmt_field(key, value, row=None):
 def cmd_show(conn, args):
     kind, name = args.kind, args.name
     start, end = _window_from_args(args)
-    summary = db.q_entity_summary(conn, kind, name, start, end)
-    if summary is None:
-        print(f"no such {kind}: {name}")
+    if not db.q_entity_exists(conn, kind, name):
+        # The aggregate below answers `COUNT(*) = 0` for a name the index has never
+        # seen, which prints as a confident report about an entity that does not
+        # exist. Asking the index without a window is what tells "no such thing"
+        # apart from "nothing in this window" — the second one is a real zero.
+        print(f"no such {kind}: {name}", file=sys.stderr)
         return 1
+    summary = db.q_entity_summary(conn, kind, name, start, end)
     print(f"{kind}: {name}")
     for key in summary.keys():
         print(f"  {_SHOW_LABELS.get(key, key):<18} "
@@ -455,16 +465,27 @@ def cmd_format(args) -> int:
     if not args.write:
         print(body)
         return 0
-    doc = Path(__file__).resolve().parent.parent / "docs" / "maintenance" / "qoder-format.md"
-    text = doc.read_text(encoding="utf-8") if doc.is_file() else ""
+    doc = Path(args.out) if args.out else (
+        Path(__file__).resolve().parent.parent
+        / "docs" / "maintenance" / "qoder-format.md")
     start, end = "<!-- BEGIN GENERATED -->", "<!-- END GENERATED -->"
     block = f"{start}\n{body}{end}\n"
-    if start in text and end in text:
+    if doc.is_file():
+        text = doc.read_text(encoding="utf-8")
+        absent = [marker for marker in (start, end) if marker not in text]
+        if absent:
+            # Appending would leave the document holding two copies of the same
+            # surface, one of them outside any marker and never replaced again —
+            # and a reader cannot tell a stale block apart from a current one.
+            print(f"{doc} is missing {', '.join(absent)}, so the generated block "
+                  f"has nowhere to go. Refusing to append a second copy: put the "
+                  f"marker back, or write a new file with --out.", file=sys.stderr)
+            return 1
         head, _, rest = text.partition(start)
         _, _, tail = rest.partition(end)
         text = head + block + tail.lstrip("\n")
     else:
-        text = (text + "\n\n" if text else "") + block
+        text = block
     doc.parent.mkdir(parents=True, exist_ok=True)
     doc.write_text(text, encoding="utf-8")
     print(f"wrote {doc}")
@@ -523,6 +544,9 @@ def main(argv=None) -> int:
     p.add_argument("name", nargs="?")
     p = sub.add_parser("format")
     p.add_argument("--write", action="store_true")
+    p.add_argument("--out", default=None,
+                   help="write the generated block into this file instead of "
+                        "docs/maintenance/qoder-format.md")
 
     args = parser.parse_args(argv)
     if not args.cmd:

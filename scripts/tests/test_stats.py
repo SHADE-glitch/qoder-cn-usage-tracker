@@ -395,6 +395,17 @@ class EmptyReportTest(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertIn(notice, out, f"`qcut {cmd}` answered with a bare header")
 
+    def test_the_span_line_has_an_absent_state_of_its_own(self):
+        """No index means no span, which is not the same as a span of one instant.
+
+        `X .. X` would read as "everything happened at one moment"; the absence of
+        both endpoints is `-`, the state this tool already uses for "nothing here".
+        """
+        rc, out, err = run("--db", self.t.db_path, "stats")
+        self.assertEqual(rc, 0, err)
+        line = [l for l in out.splitlines() if l.strip().startswith("range")][0]
+        self.assertEqual(" ".join(line.split()), "range -", out)
+
 
 class CliGuardTest(unittest.TestCase):
     """The refusal paths: the parser, the stale index, and staying read-only."""
@@ -445,6 +456,44 @@ class CliGuardTest(unittest.TestCase):
         rc, out, err = run("--db", self.t.db_path, "show", "tool", "Bash",
                            "--range", "30d")
         self.assertEqual(rc, 0, err)
+
+    def test_stats_prints_the_span_the_index_actually_covers(self):
+        """`all time` is only honest beside how far the index reaches.
+
+        The seed's newest row is an MCP call four minutes after its newest model
+        response, so a span read off the response table alone stops short and the
+        report quietly disagrees with `qcut recent`.
+        """
+        rc, out, err = run("--db", self.t.db_path, "stats")
+        self.assertEqual(rc, 0, err)
+        line = [l for l in out.splitlines() if l.strip().startswith("range")][0]
+        self.assertIn(stamp(m(0)), line, out)
+        self.assertIn(stamp(m(4)), line,
+                      f"the span is not the whole index: {line}")
+        self.assertEqual(len(line.split("..")), 2,
+                         f"the span is not a pair of endpoints: {line}")
+
+    def test_show_refuses_a_name_the_index_has_never_seen(self):
+        """A report about nothing must not be printed as a report.
+
+        The summary is an aggregate, so an unknown name used to come back as
+        `COUNT(*) = 0` and print a confident header plus a column of zeros —
+        indistinguishable from an entity that exists and has been idle.
+        """
+        rc, out, err = run("--db", self.t.db_path, "show", "tool", "NoSuchTool")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no such tool: NoSuchTool", err)
+        self.assertNotIn("tool:", out, f"the refusal still printed a report: {out}")
+        self.assertNotIn("calls", out)
+
+    def test_show_draws_a_real_zero_for_an_entity_idle_in_this_window(self):
+        """The other half: known name, quiet window — a measurement, not a refusal."""
+        rc, out, err = run("--db", self.t.db_path, "show", "tool", "Bash",
+                           "--range", "1d")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("tool: Bash", out)
+        self.assertRegex(out, r"calls\s+0")
+        self.assertIn("(no calls in this window)", out)
 
     def test_an_index_this_tool_has_not_built_is_refused_with_a_point(self):
         absent = self.t.root / "never-synced.db"
@@ -732,13 +781,19 @@ class LauncherMaintenanceTest(unittest.TestCase):
 class FormatCliTest(unittest.TestCase):
     """``qcut format`` — the generated format surface, and its one writer flag.
 
-    ``--write`` is deliberately not exercised: its target is a tracked file in
-    this repository (`docs/maintenance/qoder-format.md`), and a test that rewrote
-    documentation would be a change to the product, not a check of it.
+    ``--write`` rewrites a document *between markers*. It is exercised through
+    ``--out`` into a temp file: the tracked document in this repository is the
+    writer's production target, and a test that rewrote it would be a change to
+    the product, not a check of it.
     """
 
     def setUp(self):
         self.t = TempTree(self)
+
+    def doc(self, text):
+        path = self.t.root / "format-target.md"
+        path.write_text(text, encoding="utf-8")
+        return path
 
     def test_format_prints_the_registry_and_needs_no_database(self):
         rc, out, err = run("format")           # no --db at all
@@ -753,6 +808,70 @@ class FormatCliTest(unittest.TestCase):
         self.assertIn("unparsed", out)
         self.assertFalse(db.list_backups(self.t.db_path),
                          "a read-only report left a snapshot behind")
+
+    def test_write_splices_between_the_markers_and_keeps_the_prose(self):
+        path = self.doc("<!-- BEGIN GENERATED -->\nold\n<!-- END GENERATED -->\n"
+                        "## Hand-written section\n\nNot generated.\n")
+        rc, out, err = run("format", "--write", "--out", path)
+        self.assertEqual(rc, 0, err)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("# Qoder CN format surface", text)
+        self.assertNotIn("old", text, "the generated block was not replaced")
+        self.assertIn("## Hand-written section", text,
+                      "the writer dropped what it did not generate")
+        self.assertEqual(text.count("<!-- BEGIN GENERATED -->"), 1,
+                         "a second copy of the generated block appeared")
+
+    def test_write_refuses_a_document_that_lost_its_markers(self):
+        """The failure the refusal exists for: appending buries a stale block.
+
+        A document with no markers used to get the block tacked on the end, so it
+        held two copies of the same surface and only one of them was ever
+        regenerated again. Nothing may be written at all.
+        """
+        path = self.doc("# Somebody's notes\n\nNo markers here.\n")
+        before = path.read_bytes()
+        rc, out, err = run("format", "--write", "--out", path)
+        self.assertEqual(rc, 1, out)
+        self.assertIn(str(path), err)
+        self.assertEqual(path.read_bytes(), before,
+                         "the refusal still wrote to the document")
+
+    def test_write_names_the_marker_that_is_missing(self):
+        for half, expected in (
+            ("<!-- BEGIN GENERATED -->\nbody\n", "<!-- END GENERATED -->"),
+            ("prose\n<!-- END GENERATED -->\n", "<!-- BEGIN GENERATED -->"),
+        ):
+            with self.subTest(markers=half.strip()):
+                path = self.doc(half)
+                before = path.read_bytes()
+                rc, out, err = run("format", "--write", "--out", path)
+                self.assertEqual(rc, 1, out)
+                self.assertIn(expected, err,
+                              "the message did not name the missing marker")
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_write_creates_a_document_that_does_not_exist_yet(self):
+        """The other half of the rule: no file is the one case where there is
+        nothing to stale out, so the writer may start one."""
+        path = self.t.root / "nested" / "format-target.md"
+        self.assertFalse(path.exists())
+        rc, out, err = run("format", "--write", "--out", path)
+        self.assertEqual(rc, 0, err)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("<!-- BEGIN GENERATED -->", text)
+        self.assertIn("<!-- END GENERATED -->", text)
+
+    def test_a_second_write_changes_nothing(self):
+        """The splice must be a fixed point, or every maintenance run drifts."""
+        path = self.doc("<!-- BEGIN GENERATED -->\n\n<!-- END GENERATED -->\n"
+                        "tail\n")
+        self.assertEqual(run("format", "--write", "--out", path)[0], 0)
+        once = path.read_bytes()
+        self.assertEqual(run("format", "--write", "--out", path)[0], 0)
+        self.assertEqual(path.read_bytes(), once,
+                         "a second write moved the document")
+        self.assertTrue(once.endswith(b"tail\n"), "the tail moved or vanished")
 
 
 if __name__ == "__main__":

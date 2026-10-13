@@ -138,6 +138,15 @@ missing package, not a Python-version failure — do not read it as one.
   (its `q_usage_kpi` flattens NULL to 0, and there is no route there to describe).
   Do not "unify" one side without moving the other, or the same window answers
   differently per surface.
+- **"No such thing" and "nothing in this window" are different answers.** An
+  aggregate over `WHERE name = ?` cannot tell them apart — both return
+  `COUNT(*) = 0`, so an unknown entity printed as a confident report about something
+  that does not exist. `qcut show` now asks existence separately
+  (`db.q_entity_exists`, deliberately **window-free**) and refuses an unknown name
+  with rc 1; a known-but-idle name keeps its honest zeros and
+  `(no calls in this window)`. Anything adding a per-entity view copies that split
+  instead of reusing a summary as an existence test
+  (`test_usage.py::QueryTest`, `test_stats.py::CliGuardTest`).
 - **Name is the primary key of every panel.** Each tab lists the union of what is
   installed (the static `inventory`) and what has *ever been used* (the usage
   tables), keyed by name alone, sorted by call count. Under a time window only the
@@ -239,7 +248,12 @@ Two defenses, and both are mechanical:
   `qcut format` prints it, and `docs/maintenance/qoder-format.md` carries that
   output between `<!-- BEGIN GENERATED -->` markers.
 
-`qcut format --write` regenerates that document. When upstream changes: re-run
+`qcut format --write` regenerates that document, and **refuses** a target that lost
+either marker rather than appending a second copy of the surface below text nobody
+will regenerate again — a stale block inside the markers is replaced, a stale block
+outside them is invisible. `--out` points the writer at another path, which is what
+makes the splice and the refusal testable without rewriting a tracked file.
+When upstream changes: re-run
 `qcut format --write`, change the registry and the handler **in the same commit**,
 and re-index into a throwaway database (`QCUT_DB=/tmp/…`) before touching a real
 one. `AGENTS.md` does not list the fields — the registry does.

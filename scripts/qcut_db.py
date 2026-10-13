@@ -1181,6 +1181,18 @@ def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None):
     ).fetchall()
 
 
+def q_entity_exists(conn, kind, name):
+    """Is *name* in the index at all — **ignoring** any window the caller holds?
+
+    `show` needs two states kept apart, and a windowed aggregate cannot tell them:
+    a name that was never used, and a name used only outside this window. The first
+    is an answer the tool does not have; the second is an honest zero.
+    """
+    table, col = _history_table(kind)
+    return conn.execute(
+        f"SELECT 1 FROM {table} WHERE {col} = ? LIMIT 1", (name,)).fetchone() is not None
+
+
 def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None):
     """Counts and totals for one entity, inside the caller's window."""
     table, col = _history_table(kind)
@@ -1557,6 +1569,25 @@ def q_overview(conn) -> dict:
             return default
         return row[0]
 
+    # The reach of the index, over every usage table that carries a `ts` — not just
+    # the first one that has rows. `qcut stats` prints both ends, because "all
+    # time" is only honest next to how far the index actually goes: a cursor that
+    # stopped a week ago reads as a quiet week otherwise, and a span taken from one
+    # table alone hides work recorded in another. `sessions` is left out on purpose
+    # — its own span lives in `started_at`/`ended_at`, not in a `ts` column.
+    lo = hi = None
+    for table in ("model_calls", "tool_calls", "skill_usage", "agent_usage",
+                  "mcp_usage", "plugin_usage", "commands"):
+        try:
+            row = conn.execute(f"SELECT MIN(ts), MAX(ts) FROM {table}").fetchone()
+        except sqlite3.OperationalError:
+            continue
+        first, last = row or (None, None)
+        if first is not None:
+            lo = first if lo is None else min(lo, first)
+        if last is not None:
+            hi = last if hi is None else max(hi, last)
+
     return {
         "tool_calls": one("SELECT COUNT(*) FROM tool_calls"),
         "skills": one("SELECT COUNT(*) FROM skill_usage"),
@@ -1565,6 +1596,6 @@ def q_overview(conn) -> dict:
         "mcp": one("SELECT COUNT(*) FROM mcp_usage"),
         "model_responses": one("SELECT COUNT(*) FROM model_calls"),
         "unparsed_records": one("SELECT SUM(count) FROM unparsed"),
-        "last_ts": (one("SELECT MAX(ts) FROM model_calls", default=None)
-                    or one("SELECT MAX(ts) FROM tool_calls", default=None)),
+        "last_ts": hi,
+        "first_ts": lo,
     }

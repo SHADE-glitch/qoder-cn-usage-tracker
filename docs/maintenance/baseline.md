@@ -125,10 +125,10 @@ python3 -m unittest discover -s scripts/tests
 
 | suite | cases |
 |---|---:|
-| `test_usage.py` | 53 |
+| `test_usage.py` | 54 |
 | `test_sync.py` | 46 |
 | `test_tui.py` | 45 |
-| `test_stats.py` | 33 |
+| `test_stats.py` | 42 |
 | `test_config.py` | 19 |
 | `test_snapshots.py` | 14 |
 | `test_format_registry.py` | 10 |
@@ -139,7 +139,7 @@ python3 -m unittest discover -s scripts/tests
 | `test_readme_bilingual.py` | 7 |
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
-| **total** | **284** |
+| **total** | **294** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is 71 s, the other
 thirteen together ~9 s.
@@ -150,9 +150,9 @@ measured):
 
 | interpreter | result |
 |---|---|
-| Python 3.11.15 | 284 OK |
-| Python 3.13.14 (the `install.sh` venv) | 284 OK |
-| Python 3.14.4 | 284 OK |
+| Python 3.11.15 | 294 OK |
+| Python 3.13.14 (the `install.sh` venv) | 294 OK |
+| Python 3.14.4 | 294 OK |
 
 `test_config.py` and `test_tui.py` need `textual`; the other twelve are
 stdlib-only.

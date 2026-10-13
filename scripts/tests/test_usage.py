@@ -540,6 +540,28 @@ class QueryTest(unittest.TestCase):
         self.assertEqual(summary["calls"], 2)
         self.assertEqual(summary["completed"], 1)
 
+    def test_entity_existence_ignores_the_window_the_summary_uses(self):
+        """The two answers `show` must not conflate.
+
+        A windowed aggregate says `calls = 0` for a quiet window **and** for a name
+        the index has never seen, and those are different sentences: one is a
+        measurement, the other is the tool admitting it has no idea.
+        """
+        conn = self.t.conn()
+        try:
+            self.assertTrue(db.q_entity_exists(conn, "tool", "Bash"))
+            self.assertEqual(
+                db.q_entity_summary(conn, "tool", "Bash", 0, 1)["calls"], 0,
+                "a window with no rows should read as zero calls")
+            self.assertTrue(db.q_entity_exists(conn, "tool", "Bash"),
+                            "existence moved with the window")
+            self.assertFalse(db.q_entity_exists(conn, "tool", "NoSuchTool"))
+            self.assertEqual(
+                db.q_entity_summary(conn, "tool", "NoSuchTool", None, None)["calls"], 0,
+                "an unknown name is what a zero report used to look like")
+        finally:
+            conn.close()
+
     def test_call_detail_returns_every_column(self):
         conn = self.t.conn()
         try:
