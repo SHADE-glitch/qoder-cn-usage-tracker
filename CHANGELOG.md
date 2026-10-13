@@ -257,3 +257,39 @@ Cost     One extra `SELECT 1 … LIMIT 1` per `show`, and seven min/max scans in
          two, on a report that already reads the whole index. AGENTS.md now states the
          rule: an existence test may not be inferred from an aggregate.
 Commit   bc941f8
+
+### D-012 · 2026-10-13 · fix
+Symptom  The incremental cursor trusted a single staleness signal — the file shrank
+         below the stored offset. Two shapes escaped it, and both failed without a
+         sound: a **rewrite that produced the same byte length** (the offset sat at
+         the end of the file, the read returned zero bytes, the run reported success
+         and the new records were absent), and a shortened rewrite that stayed above
+         the offset. The tail was the mirror mistake — a record and its newline are
+         two writes, and an `rfind`-based reader treats the gap as a partial line, so
+         a final record with no terminator was never indexed *and* the
+         size/mtime short-circuit then skipped the file forever. All 183 transcripts
+         here end with a newline, so neither path is firing on this machine; the
+         crash window is real, just not currently occupied.
+Change   `_needs_reset` names every way an offset stops being trustworthy — shrink
+         below it, a moved mtime that did not grow the file, an offset that no longer
+         follows a record boundary — with an early-out for a file that is untouched
+         *and* fully consumed, without which a transcript ending without a terminator
+         would be rebuilt on every run. `index_file` parses what follows the last
+         newline and consumes it only if it yields a record; a genuinely half-written
+         line still waits, and is deliberately not counted in `unparsed` (the drift
+         signal would otherwise grow with the poll rate). `_starts_on_line_boundary`
+         accepts a terminator that arrives **after** the offset, which is what a late
+         newline looks like after the record was already read.
+Evidence L0 2026-10-13 301 tests OK. 4 of the 7 new `test_sync.RewrittenFileTest` cases
+         fail against `git show HEAD:scripts/qcut-sync.py`: the unterminated tail is
+         never read, the same-length rewrite is never re-read, the late-terminator
+         case's own precondition (`offset == size`) does not hold, and the predicate's
+         unit shape disagrees. The other three pass before and after and are kept as
+         controls: a plain append must not reset, a shortened file must, and a partial
+         tail must not inflate `unparsed`.
+Cost     A rewrite that grows the file by exactly the new content is still read as an
+         append — stat cannot tell those apart, and claiming otherwise would be a
+         guess. `unparsed(reason, count)` has no file attribution, so a re-read adds a
+         file's earlier bad lines again; AGENTS.md now states the table is a lower
+         bound and `qcut sync --full` is the only way to make it exact.
+Commit   b85b1fd
