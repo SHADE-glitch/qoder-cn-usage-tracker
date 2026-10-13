@@ -167,7 +167,11 @@ missing package, not a Python-version failure — do not read it as one.
   shared range.
 - **A table never shows a half column.** Every `DataTable` in the app is filled
   through `_fill_wide`, which keeps the longest **prefix** of its columns and
-  names the dropped ones on the note line above it. Each host declares
+  names the dropped ones on the note line above it. The plan **re-runs on
+  `on_resize`**: widening gives the columns back and narrowing takes them away
+  without losing rows or row keys (`test_tui.py::ResizeTest` — before those cases
+  the mount-time layout was all that had ever been measured, so a re-plan that
+  lost rows or never returned a column read as intended behaviour). Each host declares
   `WIDE_TABLES` = table id -> (columns, note id, cells lost to its surroundings);
   `test_every_datatable_in_the_source_is_registered` walks `qcut-tui.py` for
   `DataTable(id=…)` and fails on any id no host registers.

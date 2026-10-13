@@ -587,6 +587,172 @@ class WideTableTest(unittest.IsolatedAsyncioTestCase):
                          " drifted apart")
 
 
+class ResizeTest(unittest.IsolatedAsyncioTestCase):
+    """The column plan re-runs when the terminal changes size.
+
+    `TrackerApp.on_resize` re-plans every wide table, but no case had ever resized
+    one, so the whole dynamic half of the rule was unmeasured: a table that dropped
+    columns at mount and never gave them back would have looked like the intended
+    behaviour, and a rebuild that quietly lost rows would have looked like a filter.
+    """
+
+    async def asyncSetUp(self):
+        self.t = build_db(self)
+
+    async def _tab(self, pilot, app, tab):
+        from textual.widgets import TabbedContent
+        app.query_one(TabbedContent).active = tab
+        await pilot.pause()
+        await pilot.pause()
+
+    async def _labels(self, app, table_id):
+        from textual.widgets import DataTable
+        table = app.query_one(f"#{table_id}", DataTable)
+        return table, [c.label.plain for c in table.columns.values()]
+
+    async def test_every_table_at_a_narrow_width_is_a_prefix_of_its_plan(self):
+        """Unconditional, where the mount-time case asked `if note.display:`."""
+        from textual.widgets import Static
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(64, 24)) as pilot:
+            for table_id, (cols, note_id, _chrome) in app.WIDE_TABLES.items():
+                tab = table_id[: -len("-table")]
+                await self._tab(pilot, app, tab)
+                table, labels = await self._labels(app, table_id)
+                with self.subTest(tab=tab):
+                    self.assertGreaterEqual(len(labels),
+                                            TUI.WideTableMixin.MIN_SHOWN,
+                                            f"{tab} narrowed to fewer than two columns")
+                    self.assertEqual(labels, list(cols)[:len(labels)],
+                                     f"{tab} reordered its plan when it dropped")
+                    note = app.query_one(f"#{note_id}", Static)
+                    self.assertEqual(note.display, len(labels) < len(cols),
+                                     f"{tab} lied about what it hid")
+                    for dropped in cols[len(labels):]:
+                        self.assertIn(dropped, str(note.content))
+
+    async def test_widening_gives_every_dropped_column_back_with_its_rows(self):
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        from textual.widgets import Static
+        async with app.run_test(size=(64, 24)) as pilot:
+            await self._tab(pilot, app, "tokens")
+            table, narrow = await self._labels(app, "tokens-table")
+            rows = table.row_count
+            self.assertLess(len(narrow), len(TUI.TOKENS_COLUMNS),
+                            "the fixture never hid a column, so this proves nothing")
+            self.assertGreater(rows, 0, "no rows to keep across the resize")
+            await pilot.resize_terminal(200, 40)
+            await pilot.pause()
+            await pilot.pause()
+            _t, wide = await self._labels(app, "tokens-table")
+            self.assertEqual(wide, list(TUI.TOKENS_COLUMNS),
+                             "widening never gave the columns back")
+            self.assertEqual(table.row_count, rows, "the rebuild lost rows")
+            self.assertFalse(app.query_one("#colnote-tokens", Static).display,
+                             "a table showing everything still announced a plan")
+
+    async def test_narrowing_drops_columns_and_announces_it_without_losing_rows(self):
+        from textual.widgets import Static
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(200, 40)) as pilot:
+            await self._tab(pilot, app, "tokens")
+            table, wide = await self._labels(app, "tokens-table")
+            self.assertEqual(wide, list(TUI.TOKENS_COLUMNS))
+            self.assertGreater(table.row_count, 0, "nothing to keep across the resize")
+            rows = table.row_count
+            await pilot.resize_terminal(64, 24)
+            await pilot.pause()
+            await pilot.pause()
+            _t, narrow = await self._labels(app, "tokens-table")
+            self.assertLess(len(narrow), len(wide),
+                            "narrowing hid nothing, so the note is untested")
+            self.assertEqual(narrow, list(TUI.TOKENS_COLUMNS)[:len(narrow)])
+            self.assertEqual(table.row_count, rows, "the rebuild lost rows")
+            self.assertTrue(app.query_one("#colnote-tokens", Static).display,
+                            "columns were hidden without saying which")
+
+    async def test_a_row_selected_after_a_resize_routes_by_its_uncapped_key(self):
+        """The key is built from the uncapped row, so a rebuild cannot reroute it.
+
+        Widening first matters: the plan runs again and the table is refilled, and
+        the row the cursor lands on must still open the history of the entity whose
+        key it carries — a key taken from a capped cell would route two long names
+        that share a prefix to whichever screen won first.
+        """
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(64, 24)) as pilot:
+            await self._tab(pilot, app, "tools")
+            await pilot.resize_terminal(200, 40)
+            await pilot.pause()
+            await pilot.pause()
+            table, _labels = await self._labels(app, "tools-table")
+            kind, _, name = str(next(iter(table.rows.values())).key.value).partition("\t")
+            self.assertEqual(kind, "tool", f"an unexpected key vocabulary: {kind}")
+            self.assertFalse(name.endswith("…"), f"the key was a capped cell: {name}")
+            # The oracle is the database, not the router: whatever the key claims,
+            # that tool really has rows.
+            known = {r["tool_name"] for r in self.t.rows(
+                "SELECT DISTINCT tool_name FROM tool_calls")}
+            self.assertIn(name, known,
+                          f"the key carries a name that is not a tool: {name!r}")
+            table.move_cursor(row=0)
+            await pilot.pause()
+            table.action_select_cursor()
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen
+            self.assertIsInstance(screen, TUI.HistoryScreen)
+            self.assertEqual(screen.entity, name,
+                             "the detail screen opened for a different entity")
+
+
+    async def test_two_names_sharing_a_prefix_longer_than_the_cap_route_apart(self):
+        """The key is built from the uncapped row, and this is the whole reason.
+
+        Both names are longer than `name_cap` and identical well past the point where
+        the cell is cut, so on a narrow terminal the two rows *render* the same text.
+        A key taken from the rendered cell would send both rows to whichever entity
+        the router met first, and one tool's history would be shown for the other.
+        """
+        shared = "g" * (db.DEFAULTS["name_cap"] + 6)
+        first, second = shared + "-first", shared + "-second"
+        conn = self.t.conn()
+        now_ms = int(datetime.now().timestamp() * 1000)
+        for call_id, name in (("c-long-a", first), ("c-long-b", second)):
+            conn.execute(
+                "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+                " category, ts, duration_ms, status) VALUES(?,?,?,?,?,?,?,?)",
+                (call_id, "s1", "/work/demo", name, "builtin", now_ms, 100,
+                 "completed"))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(64, 24)) as pilot:
+            await self._tab(pilot, app, "tools")
+            table, labels = await self._labels(app, "tools-table")
+            keys = {str(row.key.value).partition("\t")[2]
+                    for row in table.rows.values()}
+            self.assertIn(first, keys)
+            self.assertIn(second, keys)
+            order = [str(row.key.value).partition("\t")[2]
+                     for row in table.rows.values()]
+            for expected in (first, second):
+                index = order.index(expected)
+                table.move_cursor(row=index)
+                await pilot.pause()
+                table.action_select_cursor()
+                await pilot.pause()
+                await pilot.pause()
+                screen = app.screen
+                self.assertIsInstance(screen, TUI.HistoryScreen)
+                self.assertEqual(screen.entity, expected)
+                self.assertEqual(str(screen.query_one("#hist-head").content).count(
+                    "…"), 0, "the heading was drawn from a capped name")
+                app.pop_screen()
+                await pilot.pause()
+
+
 class DrilldownTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.t = build_db(self)
