@@ -245,7 +245,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 306 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 309 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -257,7 +257,7 @@ this repository reaches the network.
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 53 | transcript parsing, classification (tool / skill / agent / MCP), route origin, inventory, incremental and full re-sync, rewritten and unterminated tails, timestamped-status pairing, unparsed accounting, idempotency across **every** table in the schema, crash safety |
+| `test_sync.py` | 56 | transcript parsing, classification (tool / skill / agent / MCP), route origin, inventory, incremental and full re-sync, rewritten and unterminated tails, timestamped-status pairing, unparsed accounting, idempotency across **every** table in the schema, an unreadable transcript reported and retried, crash safety |
 | `test_usage.py` | 54 | the calendar-day windows, cache hit rate, every query helper, the "installed ∪ used" union, the one token/credits reporting predicate and its SQL↔Python mirror, entity existence kept apart from a quiet window, schemas, the minimal snapshot→list→restore round trip, a fresh install with no database yet, and the headless reports' wording |
 | `test_stats.py` | 42 | the headless CLI end to end: real `main([...])` calls for every subcommand, `--db` and `--limit`, the read-only connection, the stale-index refusal, `export` / `inventory` / `recent` / `show` / `health`, a malformed settings file reported as a message rather than a traceback, the `backup`/`restore` pair, `format --write` splicing between the markers and **refusing** to append into a document that lost them, a name `show` has never seen refused instead of drawn as zeros, the span the index actually covers, and the launcher refusing to touch a path it was not given |
 | `test_snapshots.py` | 14 | the destructive step's way back: the snapshot is taken *before* the change, it is an online backup rather than a byte copy of a file whose committed rows are still in the `-wal`, a restore keeps the state it overwrote, retention prunes only what it made, and an index whose offsets were lost is still worth a snapshot |
@@ -289,7 +289,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 306 tests above |
+| `scripts/tests/` | the 309 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

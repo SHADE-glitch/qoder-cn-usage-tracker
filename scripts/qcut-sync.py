@@ -201,6 +201,9 @@ QODER_FIELDS = (RECORD_FIELDS | MESSAGE_FIELDS | TEXT_BLOCK_FIELDS
 # qcut's own vocabulary in the ``unparsed`` table — NOT Qoder fields.
 UNPARSEABLE_LINE = "unparseable_line"
 MISSING_TYPE = "type:<missing>"
+# A transcript the run could not open. Named because it is a reason an operator
+# reads: it must never be confused with a file that was read and understood.
+UNREADABLE_FILE = "unreadable_file"
 # Keys of dicts *qcut* builds and reads: its `sync_state` columns, its
 # inventory-side plugin→skill map, and `run()`'s result. They are listed because
 # the format mirror cannot tell an upstream dependency from an internal key by
@@ -912,7 +915,7 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             new_offset = index_file(conn, path, offset, providers, skill_owner,
                                     fallback, counts)
         except OSError:
-            _bump(counts, "unreadable_file")
+            _bump(counts, UNREADABLE_FILE)
             continue
         conn.execute(
             "INSERT OR REPLACE INTO sync_state(file_path, size, mtime, offset)"

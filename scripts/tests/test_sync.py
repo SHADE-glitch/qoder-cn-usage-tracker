@@ -796,5 +796,65 @@ class CrashSafetyTest(unittest.TestCase):
             self.assertEqual(fh.read(1), b"\n")
 
 
+    def test_an_offset_after_an_unterminated_record_sits_on_a_record_boundary(self):
+        """The same rule, on the shape the line-boundary case cannot see.
+
+        A consumed final record with no terminator leaves the offset at the end of
+        the file with a `}` behind it. That is a record boundary — and asserting
+        only the newline form would let the code and the doc drift apart.
+        """
+        path = self.t.transcript()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(assistant("s1", "m1", usage=usage(input_tokens=1))),
+                        encoding="utf-8")
+        self.t.sync()
+        row = self.t.one("SELECT * FROM sync_state")
+        self.assertEqual(row["offset"], path.stat().st_size)
+        with open(path, "rb") as fh:
+            fh.seek(row["offset"] - 1)
+            self.assertEqual(fh.read(1), b"}")
+
+    def test_an_unreadable_file_is_reported_and_the_run_survives(self):
+        """One unreadable transcript must not take the index down with it.
+
+        The name is planted in `unparsed` because the reason is the point: an
+        operator reading `qcut health` has to see *which* shape failed, not a run
+        that returned nothing.
+        """
+        good = self.t.write("projects/-work-demo/good.jsonl", [
+            assistant("s1", "m1", usage=usage(input_tokens=1))])
+        bad = self.t.write("projects/-work-demo/bad.jsonl", [
+            assistant("s2", "m2", usage=usage(input_tokens=2))])
+        os.chmod(bad, 0)
+        self.addCleanup(os.chmod, bad, 0o644)
+        summary = self.t.sync()
+        self.assertGreaterEqual(summary["files"], 2,
+                                "the run did not reach the file list")
+        self.assertEqual(self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 1,
+                         "the readable transcript was not indexed either")
+        reasons = dict(self.t.rows("SELECT reason, count FROM unparsed"))
+        self.assertIn("unreadable_file", reasons, reasons)
+
+    def test_a_retry_picks_the_unreadable_file_back_up(self):
+        """Nothing was remembered for it, so the next run reads it.
+
+        Storing an offset for a file that was never read would retire it forever,
+        and the row it holds would be missing with no reason attached to it.
+        """
+        bad = self.t.write("projects/-work-demo/bad.jsonl", [
+            assistant("s2", "m2", usage=usage(input_tokens=2))])
+        os.chmod(bad, 0)
+        self.t.sync()
+        self.assertIsNone(self.t.one(
+            "SELECT 1 x FROM sync_state WHERE file_path = ?", (str(bad),)))
+        self.assertEqual(
+            self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 0)
+        os.chmod(bad, 0o644)
+        self.t.sync()
+        self.assertEqual(
+            self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 1,
+            "the file stayed skipped after it became readable")
+
+
 if __name__ == "__main__":
     unittest.main()
