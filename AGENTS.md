@@ -78,12 +78,18 @@ missing package, not a Python-version failure — do not read it as one.
   the parser reads and scanned across **every text column of every table**, with a
   positive control so the scan cannot pass on a database that indexed nothing.
   Do not re-add a column that holds free text.
-- **Nothing leaves the machine.** No production script imports a socket, HTTP
-  client, mail or process-spawning module. **Scope it honestly:**
-  `test_privacy.py::ImportSurfaceTest` inspects *this repository's* four
-  production scripts — it is not a claim about third-party packages. The one
-  exemption is `threading` in `qcut-tui.py`, for the background sync worker, and
-  it is listed by name in `ALLOWED_EXTRA` so it stays visible.
+- **Nothing leaves the machine.** **Scope it honestly:**
+  `test_privacy.py::ImportSurfaceTest` inspects *this repository's* four production
+  scripts — it is not a claim about third-party packages. Each script declares its
+  **whole** import surface in `MODULE_ALLOWLIST`, and anything outside it fails: an
+  allowlist refuses a module nobody ever thought to forbid, where a denylist can
+  only refuse the ones someone named in advance. A declared module the file no
+  longer uses fails too, so the list cannot quietly grow wider than the code. Two
+  things a list of imports cannot see are checked apart: a call reached through a
+  module that is already declared (`os.system` — `os` is on three allowlists) in
+  `FORBIDDEN_CALLS`, and a module named inside a string in `DYNAMIC_LOADERS`, whose
+  only entry is `load_sync` loading its sibling by path. Nothing imports
+  `threading`: the TUI's sync worker runs on Textual's own pool.
 - **Tests never touch real state.** Each suite builds its own throwaway database
   **and** its own throwaway Qoder tree in a temp directory; the real `usage.db`
   and the real `~/.qoder-cn` are never opened. A test that reads a live store is
@@ -270,9 +276,11 @@ Three promises are load-bearing enough that prose is not proof.
 python3 -m unittest scripts.tests.test_privacy
 ```
 
-1. **Nothing leaves the machine** — an AST import allowlist over the four
-   production scripts, with forbidden roots named broadly so adding one is a test
-   failure rather than a quiet convention change.
+1. **Nothing leaves the machine** — an AST import **allowlist**: each production
+   script declares its entire module surface, so an import nobody has forbidden is
+   still a test failure, and so is a declaration the code no longer uses. A call
+   reached through an already-declared module (`os.system`) and a module named in a
+   string are checked separately, each with a control that proves the check fires.
 2. **Qoder's own files are never written** — a fixture tree is fingerprinted
    before and after the real indexer runs over it; one changed byte fails it.
 3. **Metadata only, never content** — sentinels in every argument slot, scanned
