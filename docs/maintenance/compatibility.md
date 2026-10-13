@@ -31,7 +31,7 @@ Measured 2026-10-12 with `textual 8.2.8` installed in each. The per-suite counts
 
 - The interactive TUI needs `textual>=8.2,<9` (`requirements.txt`), the only non-stdlib runtime
   dependency. Measured green on `textual 8.2.8`.
-- `test_config.py` and `test_tui.py` need `textual`; the other 12 suites are standard-library
+- `test_config.py` and `test_tui.py` need `textual`; the other 13 suites are standard-library
   only. On a bare interpreter without `textual`, `test_config.py` reports three *errors* — a missing
   package, not a Python-version failure.
 

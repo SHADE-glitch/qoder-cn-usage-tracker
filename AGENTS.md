@@ -2,6 +2,9 @@
 
 Guidance for AI coding agents working in this repository.
 
+> **Dimension.** This repository is dimension **A — open source, strict** in the machine-wide
+> `CONVENTIONS.md` (outside this repository); the detail lives in `STANDARD.md`.
+>
 > **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
 > `CHANGELOG` entry format, CI version pinning and entry commands, the test entry command, and
 > the runtime ignore list are defined once in the machine-wide `STANDARD.md` (outside this
@@ -59,7 +62,7 @@ Single file: `python3 -m unittest discover -s scripts/tests -p 'test_sync.py'`.
 
 **Run the suite with the project venv** (`.venv/bin/python -m unittest …`). Two
 suites need `textual`: `test_tui.py`, and `test_config.py` — its wiring cases
-exec `qcut-tui.py` to prove every setting is read by a renderer. The other twelve
+exec `qcut-tui.py` to prove every setting is read by a renderer. The other thirteen
 are stdlib-only and run anywhere. That count is checked against `scripts/tests/`
 rather than typed (`test_maintenance_docs.py`), because a suite added later would
 otherwise make this sentence a lie by existing. On a bare interpreter without `textual`, `test_config.py` reports

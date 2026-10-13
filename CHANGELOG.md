@@ -417,3 +417,36 @@ Cost     Renaming a tab now fails on purpose. That is the cost of the contract b
          than assumed, and a sibling checkout is not importable from here, so this is the only place
          it can be read.
 Commit   966ba27
+
+### D-018 · 2026-10-13 · guard
+Symptom  The root-file layer was a naming convention with nothing behind it. No check in this
+         repository asserted that the finalized files sit at the repository root, that `LICENSE`
+         exists, or that `AGENTS.md` points at the machine-wide standard instead of restating it.
+         A renamed or deleted root file would only be noticed by a person reading the diff.
+Change   Add `scripts/tests/test_conventions.py` (9 cases, standard library only, and it installs
+         the same hermetic tripwire as its siblings). It asserts the finalized layer is present at
+         the root and that `pyproject.toml` is the only manifest; that `AGENTS.md` carries the
+         one-line dimension pointer and reproduces none of the standard's own numbered section
+         headings; that `.gitignore` still covers the runtime state the standard lists and that
+         `git ls-files` tracks none of it; and that no process draft is tracked anywhere. `AGENTS.md`
+         gains the dimension line above the shared-standard pointer it already had. Three
+         consequence edits follow, all of them count arithmetic that this repository already
+         checks: the README pair moves from 314 to 323 in all three of its phrasings, the
+         `docs/maintenance/baseline.md` table gains the new row and the new total, and the
+         stdlib-only count becomes thirteen, because the new suite is stdlib-only. That last one
+         edits a test — `test_the_stdlib_only_count_is_the_suite_list_minus_textual` carried
+         `+ 12` — and it is edited in the direction the suite makes true, not to hide a failure.
+         Nothing is fetched — every assertion reads this working tree.
+Evidence `python3 -m pytest scripts/tests -q` 323 passed (147 subtests), run with the final content
+         of this entry in the tree. Provoked for real: moving `LICENSE` out of the tree turns the
+         root-layer case red with `AssertionError: Lists differ: [] != ['LICENSE: create this file
+         at the repository root']`, and restoring it turns the suite green again. Two earlier
+         drafts of the guard were themselves red and were corrected rather than suppressed — a
+         heading match that also caught this repository's own `## CI`, and an ignore-list spelling
+         that only matched `.venv/`. No test was skipped, widened or moved to make a check pass.
+Cost     The manifest and ignore lists are hard-coded, so a deliberate second manifest or a new
+         runtime artefact is a change to this file rather than a surprise failure. The stdlib-only
+         count is derived by subtraction from a hard-coded constant, so adding a stdlib suite means
+         editing that constant as well; this entry is the first time it has moved.
+
+Commit   18c6668

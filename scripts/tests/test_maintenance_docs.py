@@ -192,7 +192,7 @@ class CiMatchesTheDeclarationTest(unittest.TestCase):
         """
         textual_suites = {"test_tui.py", "test_config.py"}
         suites = sorted(p.name for p in (SCRIPTS / "tests").glob("test_*.py"))
-        self.assertEqual(len(suites), len(textual_suites) + 12,
+        self.assertEqual(len(suites), len(textual_suites) + 13,
                          "the suite list moved out from under this case's own "
                          "arithmetic -- review which suites import textual")
         expected = len(suites) - len(textual_suites)

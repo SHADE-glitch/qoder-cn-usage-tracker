@@ -145,7 +145,8 @@ python3 -m unittest discover -s scripts/tests
 | `test_readme_bilingual.py` | 7 |
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
-| **total** | **314** |
+| `test_conventions.py` | 9 |
+| **total** | **323** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is 71 s, the other
 thirteen together ~9 s.
@@ -160,7 +161,7 @@ measured):
 | Python 3.13.14 (the `install.sh` venv) | 310 OK |
 | Python 3.14.4 | 310 OK |
 
-`test_config.py` and `test_tui.py` need `textual`; the other twelve are
+`test_config.py` and `test_tui.py` need `textual`; the other thirteen are
 stdlib-only.
 Running the suite on a bare interpreter without `textual` gives three *errors* in
 `test_config.py`, because its wiring cases exec `qcut-tui.py` — that is a missing
