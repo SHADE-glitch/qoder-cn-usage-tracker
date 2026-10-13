@@ -208,6 +208,15 @@ missing package, not a Python-version failure — do not read it as one.
 - **A behaviour change ships with a case that fails without it.** If no test goes
   red when you undo the change, the change is not verified yet — and provoke it:
   remove the fix on purpose and read the failure.
+- **A case may not depend on the runner's clock or scheduler.** Two shapes that
+  pass locally and fail on the runner, both seen here: `datetime.now()` fed to an
+  assertion about a *day* boundary (`window_bounds("7d", now)` versus
+  `window_bounds("7d", now - 3h)` — three hours back crosses into yesterday at
+  01:35 UTC and passes at 09:35 +08:00, same code), and two `pilot.click` lines
+  with no `await pilot.pause()` between them, where whether the second click lands
+  before the first has taken effect is scheduling. Anchor cases to fixed hours, and
+  let `test_tui.py::ClickCadenceTest` enumerate the click pairs. **CI's matrix runs
+  in UTC** — a local green says nothing about a date-anchored assertion here.
 - **A settings case must pass in someone else's shell.** Anything asserting the
   file or the defaults is asserting them *under* the environment, which outranks
   both. `test_config.py` wraps those cases in `no_settings_env()`, which hides

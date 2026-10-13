@@ -39,7 +39,8 @@ QCUT_DB=/tmp/qcut-check.db qcut models                 # 按路由的积分/toke
 ## CI
 `.github/workflows/ci.yml` 在 Python 3.11 / 3.14 矩阵上跑离线层——即声明的下限，与本机实测通过的
 最高版本。它不是你开发用的解释器（`install.sh` 建的是 3.13 venv），一次绿的运行对它没跑过的版本
-什么都不说明。
+什么都不说明。**跑批机的时钟是 UTC**，你 shell 的大多不是：日期敏感的失败请用
+`TZ=UTC python3 -m unittest discover -s scripts/tests` 复现，并且记住 CI 只看得到**已推送**的提交。
 
 ## 资产
 | 文档 | 什么时候读 |

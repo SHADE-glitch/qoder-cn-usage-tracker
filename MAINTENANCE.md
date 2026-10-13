@@ -48,6 +48,9 @@ was renamed.
 `.github/workflows/ci.yml` runs the offline layer on a Python 3.11 / 3.14 matrix — the declared
 floor and the highest version measured green here. It is not the interpreter you develop on
 (`install.sh` builds a 3.13 venv), and a green run says nothing about a version it did not run.
+**The runner's clock is UTC**, your shell's probably is not: reproduce a date-sensitive failure
+with `TZ=UTC python3 -m unittest discover -s scripts/tests`, and note that CI only ever sees
+*pushed* commits.
 
 ## Assets
 | Document | Read it when |

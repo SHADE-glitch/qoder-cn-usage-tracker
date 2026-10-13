@@ -346,3 +346,30 @@ Evidence L0 2026-10-13 309 tests OK. Provoked on copies: letting the `OSError` e
 Cost     One `os.chmod` and its cleanup per case, and any future error path for the
          source files has to keep a skipped file un-remembered.
 Commit   926ba9a
+
+### D-015 · 2026-10-13 · fix
+Symptom  Two cases whose verdict was the runner's, not the code's. (1) CI's Python 3.11 job at
+         5669440 failed with `'November 2026' not found in 'December 2026'` while 3.11, 3.13 and
+         3.14 all passed locally: the calendar-stepping case issued `pilot.click("#dr-prev")`
+         **twice with no `await pilot.pause()` between**, and Textual processes the message pump a
+         click posts at the next pause — so the second click can arrive before the first has moved
+         anything. (2) CI's 3.14 job at 5830604 had failed `test_the_window_is_whole_calendar_days_
+         not_rolling_hours` by exactly 86,400,000 ms: it compared `window_bounds("7d", now)` with
+         `window_bounds("7d", now - 3h)`, which is only a test of the rule while "three hours ago"
+         stays inside the same local day — at 01:35 UTC it is yesterday, at 09:35 +08:00 it is not.
+Change   Both click sites are paced, and `ClickCadenceTest` reads `test_tui.py`'s own source and
+         fails on any two adjacent `await pilot.click(` lines — a cadence rule that only fires when
+         the timing is unlucky is not a guard, and the check enumerates pairs instead of counting
+         them so a new one cannot slip in. The window case now anchors to fixed hours: the start
+         must not creep between 09:00 and 15:00, and one step of a 7-day window must be exactly one
+         **calendar** day (compared as dates, so a 23- or 25-hour DST day cannot fail it either).
+         AGENTS.md gains the convention, and MAINTENANCE.md/·zh-CN.md now say the runner's clock is
+         UTC and give the reproduction command.
+Evidence 310 tests OK on 3.11 and 3.14 under **`TZ=UTC`** (the exact shape that failed) and on the
+         3.13 venv in local time. Provoked on copies: dropping `.replace(hour=0, …)` from
+         `window_bounds` fails the rewritten case with "the window crept with the hour inside one
+         day" (and two neighbours); removing one of the new pauses trips the cadence guard.
+Cost     One more second of `pilot.pause()` per click pair, and a source-shape rule that will
+         complain if someone ever wants two clicks to land together — that has to be a deliberate
+         restructuring, not an accident.
+Commit   a4918d6
