@@ -293,3 +293,32 @@ Cost     A rewrite that grows the file by exactly the new content is still read 
          file's earlier bad lines again; AGENTS.md now states the table is a lower
          bound and `qcut sync --full` is the only way to make it exact.
 Commit   b85b1fd
+
+### D-013 · 2026-10-13 · guard
+Symptom  The column plan had only ever been measured at mount. `TrackerApp.on_resize`
+         re-plans every wide table, and no case in 45 had changed a terminal size, so
+         the dynamic half of the rule "a table never shows a half column" was
+         unobserved in both directions: a plan that dropped columns at mount and never
+         gave them back would have looked like intent, and a rebuild that lost rows
+         would have looked like a filter. Two of the mount-time cases were also
+         conditionals — `if note.display:` — which pass when nothing is hidden, so they
+         could not report a plan that hid nothing and said nothing.
+Change   `test_tui.py::ResizeTest` (5 cases): every table at a narrow width is a
+         **prefix** of its registered plan and names each dropped column on the note
+         (asserted, not conditional); widening at 200 columns returns every column,
+         keeps `row_count`, and hides the note; narrowing drops columns, keeps the rows,
+         and displays the note; a row selected after narrow→wide routes by the key its
+         row carries; and two tool names longer than `name_cap` and identical past the
+         cut point still open **their own** history — which is what turns "the key comes
+         from the uncapped row" from a code comment into a check. The last case reads
+         its expected names back from `tool_calls`, not from the router, so the router
+         cannot agree with itself. AGENTS.md's rule now says the plan re-runs on resize.
+Evidence L0 2026-10-13 306 tests OK. Three provocations on throwaway copies, each naming
+         what it must break: `on_resize` returning immediately → the two resize cases;
+         `key_source` built from the capped row → the shared-prefix case alone;
+         `sorted(labels)[:keep]` instead of the prefix → the narrow-plan case and the
+         narrowing case. Neither of the last two catches the other's break, which is why
+         they are separate cases.
+Cost     Five more Textual harness runs (the suite's slowest interpreter gains ~16 s), and
+         a resize change must now keep rows and keys, not just render.
+Commit   5a52c4c
