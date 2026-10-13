@@ -34,6 +34,17 @@ TUI = load_tui()
 # Timers are pushed far out of the way so a redraw cannot race a test.
 QUIET_CFG = dict(db.DEFAULTS, refresh_secs=3600, sync_secs=3600)
 
+# The eight slots, spelled out rather than derived from `TUI.TABS`. The panes are
+# *generated* from that tuple (`scripts/qcut-tui.py` builds them in a loop), so a
+# check that compares the built panes back to the tuple that built them holds for
+# any tab set at all -- including one missing a slot. These literals are the only
+# place in this suite where the family contract is machine-read, and a sibling
+# checkout is not importable from here, so nothing else can catch the drift.
+FAMILY_TAB_IDS = ["dashboard", "tools", "skills", "agents",
+                  "plugins", "mcp", "tokens", "usage"]
+FAMILY_TAB_LABELS = ["Dashboard", "Tools", "Skills", "Agents",
+                     "Plugins", "MCP", "Tokens", "Usage"]
+
 
 def build_db(case):
     """A temp tree with one of everything, indexed, plus its db path.
@@ -81,13 +92,36 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         return app, app.run_test(size=size)
 
+    async def test_the_eight_tabs_are_present_and_in_order(self):
+        """The family contract, read against literals.
+
+        `TUI.TABS` builds the panes, so comparing the panes to it proves only
+        that the loop ran. These two lists are the contract: `cbut` and `tcut`
+        ship the same eight slots under the same names in the same order, and
+        dropping or renaming one here is the drift nobody would otherwise see.
+        """
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import TabbedContent, TabPane
+            tc = app.query_one(TabbedContent)
+            panes = list(tc.query(TabPane))
+            # TabPane carries no label in this release; the tab bar does.
+            ids = [pane.id for pane in panes]
+            labels = [tc.get_tab(pane.id).label_text for pane in panes]
+            _ = pilot
+        self.assertEqual(ids, FAMILY_TAB_IDS)
+        self.assertEqual(labels, FAMILY_TAB_LABELS)
+
     async def test_every_tab_has_its_widget_and_table(self):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(120, 40)) as pilot:
             from textual.widgets import DataTable, TabbedContent, TabPane
             tabs = app.query_one(TabbedContent)
+            # Orphan check only: every *declared* tab built a pane. The reverse
+            # -- that the declaration is the whole navigation set -- is pinned
+            # against literals by the case above, which this one cannot do.
             panes = [p.id for p in app.query(TabPane)]
-            self.assertEqual(panes, [tid for tid, _ in TUI.TABS])
+            self.assertEqual(sorted(panes), sorted(tid for tid, _ in TUI.TABS))
             for tid, _ in TUI.TABS:
                 if tid == "dashboard":
                     app.query_one("#dash-box")

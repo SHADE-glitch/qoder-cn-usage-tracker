@@ -245,7 +245,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 313 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 314 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -263,7 +263,7 @@ this repository reaches the network.
 | `test_snapshots.py` | 14 | the destructive step's way back: the snapshot is taken *before* the change, it is an online backup rather than a byte copy of a file whose committed rows are still in the `-wal`, a restore keeps the state it overwrote, retention prunes only what it made, and an index whose offsets were lost is still worth a snapshot |
 | `test_config.py` | 19 | the settings layer: defaults, file, environment precedence and bounds, a broken file that names its path, the keys `qcut health` prints, and that **every declared knob has a renderer that reads it** — a setting the user can edit for no effect is the failure this pins |
 | `test_privacy.py` | 15 | an **allowlist** of each production script's whole import surface — plus the two things a list of imports cannot see: a call reached through a module that is already declared (`os.system`) and a module named in a string — a fingerprint proving the source tree is untouched, a sentinel scan across every text column, and a positive control for each |
-| `test_tui.py` | 51 | tab wiring through Textual's own `run_test` harness, the resize axis (`on_resize` re-plans every table; a narrow plan is a prefix of its registry and names what it hid; rows and row *keys* survive the rebuild), click cadence (two `pilot.click` lines with no pause between them are a race the runner wins or loses), per-tab ranges, the Plugins tab's missing window, the column plan, empty states, drill-down, the `—`/`-`/number distinction on both measure axes, the plain tab titles and the default canvas colour, which screen owns the rows of which table, and the status line as it is **actually rendered** |
+| `test_tui.py` | 52 | tab wiring through Textual's own `run_test` harness, the resize axis (`on_resize` re-plans every table; a narrow plan is a prefix of its registry and names what it hid; rows and row *keys* survive the rebuild), click cadence (two `pilot.click` lines with no pause between them are a race the runner wins or loses), per-tab ranges, the Plugins tab's missing window, the column plan, empty states, drill-down, the `—`/`-`/number distinction on both measure axes, the plain tab titles and the default canvas colour, which screen owns the rows of which table, and the status line as it is **actually rendered** |
 | its own table (a pushed screen's row must not be routed twice), and a status line
 | that is *on screen* rather than merely holding text |
 | `test_dispatcher.py` | 9 | `bin/qcut` routing, flag pass-through, and the failure modes that are the reason it is bash |
@@ -289,7 +289,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 313 tests above |
+| `scripts/tests/` | the 314 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
