@@ -162,3 +162,65 @@ Evidence L0 2026-10-13 `test_snapshots.py::LostCursorTest`. With the single-tabl
          on a copy the case fails: `a rebuild of an index with rows took no snapshot: []`.
 Cost     Three counts instead of one, on a path that runs once per rebuild.
 Commit   83560fc
+
+### D-009 · 2026-10-13 · fix
+Symptom  `_record_commands` scanned the text of **assistant** records for a
+         `<command-name>…</command-name>` marker and stored the capture as an invoked
+         command. Across the transcripts on this machine — 182 files, 181,907 lines — the marker
+         appears 7 times and all 7 are an agent quoting the tag inside an explanation, 4 of them
+         in subagent transcripts, which `projects/**/*.jsonl` indexes; `CMD_RE` matched none of
+         them, so the path had never produced a row while being the one place in the parser that
+         stores a slice of message text. The shape that does carry an echo — a marker opening a
+         **user** text block — was never read. Neither source had a test: the only command ever
+         recorded here arrives through `toolUseResult.commandName`, 2 records.
+Change   The scan moved to the `user` branch and the registry comment now says why: an echo can
+         only come from a user block, and a marker inside assistant prose is a worked example.
+         `test_sync.CommandTest` adds three cases — both shapes in one file, so the prose must not
+         store while the echo must; the `commandName` source; and a sentinel on each side of the
+         marker, scanned across every text column, proving nothing outside the marker is kept.
+         `docs/maintenance/qoder-format.md` gained a hand-written section outside the generated
+         block recording both sources and their measured frequency.
+Evidence L0 2026-10-13 278 tests OK. Provoked against `git show HEAD:scripts/qcut-sync.py` on a
+         copy: two of the three fail — the fixture's quoted example became a command, and the user
+         echo produced none; the third (`commandName`) passed before and after, which is why it is
+         kept as the regression half. After the change all three pass and `commands` still holds
+         its measured 2 rows. `qcut format --write` over the appended section is byte-stable on a
+         second run.
+Cost     A slash command the model quotes is no longer recorded — it never was, on measured data.
+         If Qoder starts echoing the marker on an assistant record, the row is missed rather than
+         invented: the miss shows up as a `commands` count of 0, where the invention showed up as
+         usage that looked real.
+Commit   7136e8b
+
+### D-010 · 2026-10-13 · guard
+Symptom  Both READMEs, AGENTS.md § Invariants and the suite's own docstring called the privacy
+         import check an **allowlist**. It was a denylist of forbidden roots, so `import poplib`
+         in a production script was a convention change nothing reported — "nothing leaves the
+         machine" held only for escapes somebody had already thought to name. AGENTS.md carried a
+         second lie on the same subject: a `threading` exemption living in `ALLOWED_EXTRA` for the
+         TUI's sync worker, which had moved to Textual's thread pool, and the dict had been
+         emptied and commented away in the test. Two blind spots stayed open regardless: `os` is
+         imported by three scripts, so `os.system` needs no new dependency for the import surface
+         to see; and `dynamic_import_calls` looked for `import_module` and then *filtered out*
+         every `import_module` finding, while never knowing `spec_from_file_location` — the only
+         mechanism production actually uses. It returned nothing for all four files, so its case
+         was green whether or not it could detect anything.
+Change   `MODULE_ALLOWLIST` declares each script's whole surface, measured off the file: an import
+         outside it fails, a declared module the file no longer imports fails the other way, and
+         `FORBIDDEN_ROOTS` survives as a check **on the list** instead of on the code.
+         `FORBIDDEN_CALLS` covers the shell reachable through a declared import, matched by dotted
+         name because a bare-attribute match reports `sqlite3.connect`. `DYNAMIC_LOADERS` names the
+         permitted loaders per file — exactly one, `load_sync` — and the detector now knows the
+         mechanism it is meant to catch. Every check carries a control on a synthetic source. The
+         suite went from 9 cases to 15, and the three doc claims now describe what runs.
+Evidence L0 2026-10-13 284 tests OK. Seven provocations on a throwaway copy, each naming the case
+         it must fail: `import socket` → declared surface; `os.system('ls')` → call sites;
+         `importlib.import_module('http.client')` → dynamic loaders **and** declared surface;
+         `import threading` → thread rule **and** declared surface; allowlisting `poplib` →
+         guard-on-the-list **and** stale entry; allowlisting an unused `typing` → stale entry only;
+         allowlisting `urllib.request` → guard-on-the-list, while `urllib.parse` fails only the
+         stale half, which is the distinction the comment claims.
+Cost     Adding an import is now a two-edit change — the file and its declared surface — and
+         dropping one has to shrink the list. Scope is unchanged and still stated: this inspects
+         this repository's four scripts, not a third-party package's imports.
+Commit   5830604

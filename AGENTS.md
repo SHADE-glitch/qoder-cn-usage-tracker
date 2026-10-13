@@ -74,6 +74,13 @@ missing package, not a Python-version failure — do not read it as one.
   only in `command`, or an MCP target only in `tool_name`, must still be recorded —
   and `test_sync.py` has a case that goes through each branch rather than only
   through the preferred spelling.
+  One field is read *out of* text rather than out of a keyed slot: a slash
+  command's name inside a `<command-name>` marker. The marker is the boundary —
+  `CMD_RE` keeps the name, the prose around it is dropped, and the scan runs over
+  **user** records only, because a marker in an assistant block is the model
+  quoting it, not running it (D-009). A third source, `toolUseResult.commandName`,
+  is a keyed field and needs no text at all; it is the only one measured on real
+  transcripts here.
   Enforced by `test_privacy.py::MetadataOnlyTest`, a sentinel fed into every slot
   the parser reads and scanned across **every text column of every table**, with a
   positive control so the scan cannot pass on a database that indexed nothing.

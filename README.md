@@ -233,7 +233,11 @@ sync_secs = 30       # TUI auto-sync timer
 `qcut` reads only the **structured metadata** fields of Qoder's own transcripts
 and stores counts, timings, statuses, tokens, credits and identifiers. It does
 **not** read or store prompt/response text, tool argument *values*, or file
-contents. 🔒 Nothing leaves the machine.
+contents. The one thing ever read *out of* free text is a slash command's **name**,
+pulled from the `<command-name>` marker of a user record and stored as an
+identifier — the prose around the marker is discarded, and a marker the model
+quotes in its own answer is not treated as an invocation. 🔒 Nothing leaves the
+machine.
 
 Three of those promises are enforced by checks rather than by good intentions —
 see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
