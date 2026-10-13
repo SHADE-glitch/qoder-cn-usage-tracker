@@ -705,9 +705,13 @@ def index_file(conn, path: Path, offset: int, providers, skill_owner,
                fallback_project: str, counts: dict) -> int:
     """Parse one transcript from ``offset``; return the new offset.
 
-    Only whole lines are consumed: a trailing partial line (a file being
-    appended to right now) is left for the next run, so an offset always sits on
-    a line boundary.
+    Complete lines are consumed in order. What follows the last newline is a
+    *candidate*, not a partial line: a writer that flushes a record and its
+    newline separately leaves a perfectly good final record with no terminator,
+    and a record that parses is not half-written — so the tail is parsed, and
+    consumed only if it yields a record. Anything that does not parse stays
+    unconsumed and is retried, which is what keeps an offset on a record boundary
+    for the shape that really is incomplete.
     """
     size = path.stat().st_size
     if offset > size:
@@ -717,11 +721,26 @@ def index_file(conn, path: Path, offset: int, providers, skill_owner,
         data = fh.read()
     if not data:
         return offset
-    consumed = data.rfind(TRANSCRIPT_LINE_SEP)
-    if consumed == -1:
-        return offset
-    consumed += 1
-    for raw in data[:consumed].split(TRANSCRIPT_LINE_SEP):
+    boundary = data.rfind(TRANSCRIPT_LINE_SEP)
+    if boundary == -1:
+        complete, tail = b"", data
+    else:
+        complete, tail = data[:boundary + 1], data[boundary + 1:]
+    consumed = len(complete)
+    tail_record = None
+    if tail.strip():
+        try:
+            candidate = json.loads(tail.decode("utf-8", "replace"))
+        except ValueError:
+            # A half-written line, not a bad one: it stays unconsumed and is
+            # retried, and counting it would make the drift signal grow with the
+            # poll rate. Once the writer finishes it, it is a complete line and a
+            # real parse failure is counted there.
+            candidate = None
+        if isinstance(candidate, dict):
+            tail_record = candidate
+            consumed += len(tail)
+    for raw in complete.split(TRANSCRIPT_LINE_SEP):
         if not raw.strip():
             continue
         try:
@@ -736,22 +755,55 @@ def index_file(conn, path: Path, offset: int, providers, skill_owner,
             _handle_record(conn, rec, providers, skill_owner, fallback_project, counts)
         except sqlite3.Error:
             raise
+    if tail_record is not None:
+        _handle_record(conn, tail_record, providers, skill_owner,
+                       fallback_project, counts)
     return offset + consumed
 
 
 def _starts_on_line_boundary(path: Path, offset: int) -> bool:
+    """Is ``offset`` the start of a record?
+
+    Either the byte before it terminated a record, or **it** is the terminator: a
+    writer that flushes a record and then its newline leaves the stored offset on a
+    `}` with the `\n` still to come, and reading the next byte is what tells that
+    boundary from a genuine mid-record offset.
+    """
     if offset <= 0:
         return True
     with open(path, "rb") as fh:
         fh.seek(offset - 1)
+        before = fh.read(1)
+        if before == TRANSCRIPT_LINE_SEP:
+            return True
         return fh.read(1) == TRANSCRIPT_LINE_SEP
 
 
 def _needs_reset(path: Path, st, row) -> bool:
-    """Whether a file must be re-read from 0 (rewritten or replaced)."""
-    if row is None:
+    """True when a stored offset can no longer be trusted for this file.
+
+    A transcript is append-only: it grows, and the offset sits on a line boundary.
+    Three things break that: a shrink below the offset; a rewrite that did **not**
+    grow the file (mtime moved while the size stayed the same or shrank — an append
+    always grows it, so this is the only way to see a same-length rewrite); and an
+    offset that no longer follows a newline. A file that is untouched and fully
+    consumed is *not* stale: a transcript may legitimately end without a trailing
+    newline, and without this early-out such a file would fail the boundary check
+    and be re-read on every single run.
+    """
+    offset = row["offset"] or 0
+    if not offset:
         return False
-    return st.st_size < (row["offset"] or 0)
+    old_size = row["size"] or 0
+    old_mtime = row["mtime"]
+    if (st.st_mtime == old_mtime and st.st_size == old_size
+            and offset == st.st_size):
+        return False
+    return (
+        st.st_size < offset
+        or (st.st_mtime != old_mtime and st.st_size <= old_size)
+        or not _starts_on_line_boundary(path, offset)
+    )
 
 
 def format_doc() -> str:

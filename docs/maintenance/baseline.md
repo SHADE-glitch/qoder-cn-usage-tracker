@@ -1,7 +1,7 @@
 # Size & performance baseline
 
 Every number here was measured on the machine this tool was written on (Ubuntu,
-Qoder CN agent version `1.1.57`), on **2026-10-12 at 22:34 local**.
+Qoder CN agent version `1.1.57`), on **2026-10-13 at 10:28 local**, with the tree at `102b446`.
 
 The source tree is live: it is the transcript directory of the agent the owner is
 working with, so it grows between two `find` calls in the same minute. These
@@ -11,14 +11,14 @@ any of them; a stale baseline is worse than none, because it reads as a guarante
 ## The source
 
 ```bash
-find ~/.qoder-cn/projects -name '*.jsonl' | wc -l     # 176
-du -sh ~/.qoder-cn/projects                           # 370M
-find ~/.qoder-cn/projects -name 'agent-a*.jsonl' | wc -l   # 136
+find ~/.qoder-cn/projects -name '*.jsonl' | wc -l     # 183
+du -sh ~/.qoder-cn/projects                           # 384M
+find ~/.qoder-cn/projects -name 'agent-a*.jsonl' | wc -l   # 143
 ```
 
-Of those 176 files, **136 are subagent transcripts** named
+Of those 183 files, **143 are subagent transcripts** named
 `agent-a<Type>-<hash>.jsonl` whose records carry the *parent* session id. That is
-why 176 files yield 39 sessions, not 176.
+why 183 files yield 39 sessions, not 183.
 
 ## A cold sync
 
@@ -32,9 +32,9 @@ Timed with `/usr/bin/time -f '%e s %M KB peak'` on `python3 scripts/qcut-sync.py
 
 | | |
 |---|---|
-| cold (full parse of 370 MB) | **4.76 s**, 133,732 KB peak RSS |
-| warm (nothing new) | **0.12 s**, 20,132 KB peak RSS |
-| database | **19 MB** |
+| cold (full parse of 384 MB) | **4.81 s**, 134,128 KB peak RSS |
+| warm (nothing new) | **0.10 s**, 20,188 KB peak RSS |
+| database | **20 MB** |
 
 Warm is fast because each file remembers a byte offset in `sync_state` and is
 skipped outright when both its size and its mtime are unchanged.
@@ -44,26 +44,32 @@ skipped outright when both its size and its mtime are unchanged.
 ```bash
 qcut health
 ```
+`qcut stats` prints the span the index actually covers, which is the difference
+between "all time" and a claim that can be checked: at this snapshot it read
+`range 2026-09-22 16:04 .. 2026-10-13 10:28`.
 
 | table | rows |
 |---|---:|
 | `sessions` | 39 |
-| `model_calls` | 30,478 |
-| `tool_calls` | 34,432 |
+| `model_calls` | 31,644 |
+| `tool_calls` | 35,666 |
 | `skill_usage` | 2 |
-| `agent_usage` | 136 |
+| `agent_usage` | 143 |
 | `mcp_usage` | 10 |
 | `plugin_usage` | 1 |
 | `commands` | 2 |
 | `inventory` | 35 |
-| `sync_state` | 176 |
+| `sync_state` | 183 |
 | `unparsed` | 1 reason, 6 lines |
 
-`model_calls` is 30,478 of the 70,587 `assistant` records on disk: the rest carry
+`model_calls` is 31,644 of the 73,067 `assistant` records on disk: the rest carry
 no `message.usage` and are not model responses. Every `message.id` among the
-30,478 is unique, which is what makes it the primary key.
+31,644 is unique, which is what makes it the primary key.
 
 The 6 `unparsed` lines are `unparseable_line` — JSON that did not parse at all.
+The table carries no file attribution, so a re-read of a rewritten transcript adds
+that file's earlier bad lines again: read this number as **at least**, and use
+`qcut sync --full` when an exact figure is needed.
 No record *type* is unclaimed: a renamed type would show up here as a new reason,
 and that is the point of the table.
 
@@ -75,7 +81,7 @@ qcut models
 
 | model | provider | requests | tokens | credits |
 |---|---|---:|---|---|
-| `qfmodel` | builtin | 28,410 | `—` (all four fields report 0) | 17,700.03 |
+| `qfmodel` | builtin | 29,576 | `—` (all four fields report 0) | 18,321.35 |
 | `qmodel_38max` | builtin | 1,985 | `—` | 5,932.63 |
 | `qmodel` | builtin | 11 | `—` | 6.78 |
 | `auto` | builtin | 1 | `—` | 1.31 |
@@ -84,7 +90,7 @@ qcut models
 This is the clearest statement of the split, and it is a **complementary** one,
 not a missing one:
 
-- 30,407 responses on Qoder's own routes carry a real credit and a **literal `0`**
+- 31,573 responses on Qoder's own routes carry a real credit and a **literal `0`**
   in every token field.
 - 71 responses on the BYOK route carry real tokens and **no `credits` field at
   all**, which is stored NULL.
@@ -101,19 +107,19 @@ in credits, are the same mistake in opposite directions.
 
 | tool | calls | failed |
 |---|---:|---:|
-| `Bash` | 19,311 | 642 |
-| `Edit` | 7,094 | 393 |
-| `Read` | 4,718 | 13 |
-| `Write` | 958 | 40 |
-| `Grep` | 774 | 3 |
-| `TaskUpdate` | 687 | 0 |
-| `TaskCreate` | 485 | 0 |
-| `Agent` | 136 | 3 |
+| `Bash` | 20,107 | 666 |
+| `Edit` | 7,300 | 408 |
+| `Read` | 4,882 | 13 |
+| `Write` | 981 | 41 |
+| `Grep` | 788 | 4 |
+| `TaskUpdate` | 702 | 0 |
+| `TaskCreate` | 493 | 0 |
+| `Agent` | 143 | 3 |
 
-Status split across all 34,432 calls: 33,082 `completed`, 1,116 `error`,
-213 `backgrounded`, 21 with no result at all (pending).
+Status split across all 35,666 calls: 34,267 `completed`, 1,157 `error`,
+220 `backgrounded`, 22 with no result at all (pending).
 
-Separately, of the 34,417 records that carry a `toolUseResult`, **15,161 have no
+Separately, of the 35,636 records that carry a `toolUseResult`, **15,598 have no
 `kind`** — nearly half. Treating those as unfinished reported finished work as
 pending, which is why a missing `kind` means *completed*.
 
@@ -126,7 +132,7 @@ python3 -m unittest discover -s scripts/tests
 | suite | cases |
 |---|---:|
 | `test_usage.py` | 54 |
-| `test_sync.py` | 46 |
+| `test_sync.py` | 53 |
 | `test_tui.py` | 45 |
 | `test_stats.py` | 42 |
 | `test_config.py` | 19 |
@@ -139,7 +145,7 @@ python3 -m unittest discover -s scripts/tests
 | `test_readme_bilingual.py` | 7 |
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
-| **total** | **294** |
+| **total** | **301** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is 71 s, the other
 thirteen together ~9 s.
@@ -150,9 +156,9 @@ measured):
 
 | interpreter | result |
 |---|---|
-| Python 3.11.15 | 294 OK |
-| Python 3.13.14 (the `install.sh` venv) | 294 OK |
-| Python 3.14.4 | 294 OK |
+| Python 3.11.15 | 301 OK |
+| Python 3.13.14 (the `install.sh` venv) | 301 OK |
+| Python 3.14.4 | 301 OK |
 
 `test_config.py` and `test_tui.py` need `textual`; the other twelve are
 stdlib-only.

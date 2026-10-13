@@ -7,9 +7,11 @@ Each case builds a throwaway Qoder tree in a temp directory; the real
 from __future__ import annotations
 
 import json
+import os
+import types
 import unittest
 
-from _helpers import TempTree, assistant, tool_result, tool_use, usage
+from _helpers import TempTree, assistant, load_sync, tool_result, tool_use, usage
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 
@@ -562,6 +564,153 @@ class IncrementalTest(unittest.TestCase):
             assistant("s1", "m3", usage=usage(input_tokens=3))) + "\n", encoding="utf-8")
         self.t.sync()
         self.assertEqual(self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 3)
+
+
+class RewrittenFileTest(unittest.TestCase):
+    """A transcript that is *rewritten*, not appended to.
+
+    All of the indexer's speed comes from an append-only assumption, so every case
+    here is the other shape: bytes replaced at the same length, a file that
+    shortened, a terminator that arrives after the record. Each of these fails
+    silently under the old predicate — a stale offset reads zero bytes, the run
+    reports success, and the new records are simply not in the database.
+    """
+
+    def setUp(self):
+        self.t = TempTree(self)
+
+    def _spool(self, path, recs, terminator="\n"):
+        """Write the file from scratch. `terminator=""` leaves the **last** record
+        unterminated, which is the crash shape; it does not put the records on one
+        line, because two records on one line are not JSON at all."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = "\n".join(json.dumps(r) for r in recs)
+        path.write_text(body + terminator if body else "", encoding="utf-8")
+        return path
+
+    def test_a_rewritten_file_of_the_same_length_is_reread(self):
+        """The shape stat alone cannot name: same bytes, different content.
+
+        An append always grows the file, so a changed mtime that did *not* grow it
+        is a rewrite. Reading on from the old offset would return nothing at all.
+        """
+        path = self._spool(self.t.transcript(), [
+            assistant("s1", "m1", usage=usage(input_tokens=1))])
+        self.t.sync()
+        self._spool(path, [assistant("s1", "m2", usage=usage(input_tokens=2))])
+        now = path.stat().st_mtime
+        os.utime(path, (now + 5, now + 5))       # the rewrite moved mtime
+        self.t.sync()
+        ids = [r["message_id"] for r in
+               self.t.rows("SELECT message_id FROM model_calls")]
+        self.assertIn("m2", ids, f"the rewrite was read from a stale offset: {ids}")
+
+    def test_a_shrunk_file_is_reread(self):
+        path = self._spool(self.t.transcript(), [
+            assistant("s1", "m1", usage=usage(input_tokens=1)),
+            assistant("s1", "m2", usage=usage(input_tokens=2))])
+        self.t.sync()
+        self._spool(path, [assistant("s1", "m3", usage=usage(input_tokens=3))])
+        self.t.sync()
+        ids = [r["message_id"] for r in
+               self.t.rows("SELECT message_id FROM model_calls")]
+        self.assertIn("m3", ids, f"the shortened file was never re-read: {ids}")
+
+    def test_a_growing_file_is_still_read_from_its_offset(self):
+        """The control: the fix must not turn every append into a rebuild."""
+        path = self._spool(self.t.transcript(), [
+            assistant("s1", "m1", usage=usage(input_tokens=1))])
+        self.t.sync()
+        from _helpers import write_records
+        write_records(path, [assistant("s1", "m2", usage=usage(input_tokens=2))])
+        second = self.t.sync()
+        self.assertEqual(second["scanned"], 1)
+        row = self.t.one("SELECT * FROM sync_state")
+        self.assertGreater(row["offset"], 0)
+        self.assertEqual(self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 2)
+
+    def test_a_final_record_with_no_newline_is_indexed(self):
+        """A record and its terminator are two flushes, and a crash sits between."""
+        path = self._spool(self.t.transcript(), [
+            assistant("s1", "m1", usage=usage(input_tokens=1)),
+            assistant("s1", "m2", usage=usage(input_tokens=2))], terminator="")
+        self.t.sync()
+        self.assertEqual(
+            self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 2,
+            "the unterminated last record was never read")
+
+    def test_a_terminator_arriving_later_does_not_re_read_the_whole_file(self):
+        """The newline shows up after the record was already consumed.
+
+        A bad-line marker is planted in the file because a re-read from zero would
+        count it a second time — the row count is the observable that says whether
+        the offset was trusted.
+        """
+        path = self._spool(self.t.transcript(), [
+            assistant("s1", "m1", usage=usage(input_tokens=1))], terminator="")
+        self.t.sync()
+        # The precondition: the unterminated record was consumed, so the stored
+        # offset sits after it, on the byte that has not arrived yet. Without this
+        # the case passes on a build that never read the tail at all.
+        row = self.t.one("SELECT * FROM sync_state")
+        self.assertEqual(row["offset"], path.stat().st_size,
+                         "the tail was not consumed, so this case proves nothing")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\nnot-json\n")
+        self.t.sync()
+        self.assertEqual(
+            self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 1,
+            "the record before the late terminator was not kept")
+        reasons = dict(self.t.rows("SELECT reason, count FROM unparsed"))
+        self.assertEqual(reasons.get("unparseable_line"), 1, reasons)
+
+    def test_a_half_written_tail_is_not_counted_as_unparseable(self):
+        """Retried, not reported: a partial line would otherwise grow the drift
+        signal once per poll."""
+        path = self._spool(self.t.transcript(), [])
+        self.t.sync()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write('{"type": "assistant", "message": {"id": "m9"')
+        self.t.sync()
+        reasons = dict(self.t.rows("SELECT reason, count FROM unparsed"))
+        self.assertNotIn("unparseable_line", reasons, reasons)
+        self.assertEqual(
+            self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 0)
+
+    def test_the_reset_predicate_leaves_an_untouched_file_alone(self):
+        """Unit level, with the negative control the churn needs.
+
+        A file that is untouched and fully consumed must not be reset even though
+        its stored offset is not preceded by a newline — without that early-out a
+        transcript ending without a terminator would be re-read on every run.
+        """
+        sync = load_sync()
+        path = self._spool(self.t.transcript(), [
+            assistant("s1", "m1", usage=usage(input_tokens=1))], terminator="")
+        self.t.sync()
+        row = dict(self.t.one("SELECT * FROM sync_state"))
+        st = path.stat()
+        self.assertFalse(sync._needs_reset(path, st, row),
+                         "an untouched, fully consumed file was called stale")
+        rewritten = types.SimpleNamespace(
+            st_size=st.st_size, st_mtime=st.st_mtime + 5)
+        self.assertTrue(sync._needs_reset(path, rewritten, row),
+                        "a same-length rewrite was not called stale")
+        shorter = types.SimpleNamespace(st_size=st.st_size - 1,
+                                        st_mtime=st.st_mtime + 5)
+        self.assertTrue(sync._needs_reset(path, shorter, row),
+                        "a shortened file was not called stale")
+        # A plain append, on a file that ends the way a flushed transcript does.
+        second = self._spool(self.t.transcript("projects/-work-demo/s2.jsonl"), [
+            assistant("s2", "m1", usage=usage(input_tokens=1))])
+        self.t.sync()
+        row2 = self.t.one("SELECT * FROM sync_state WHERE file_path = ?",
+                          (str(second),))
+        st2 = second.stat()
+        appended = types.SimpleNamespace(st_size=st2.st_size + 40,
+                                         st_mtime=st2.st_mtime + 5)
+        self.assertFalse(sync._needs_reset(second, appended, dict(row2)),
+                         "a plain append was called stale")
 
 
 class UnparsedAccountingTest(unittest.TestCase):

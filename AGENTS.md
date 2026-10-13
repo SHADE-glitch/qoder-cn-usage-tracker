@@ -106,9 +106,18 @@ missing package, not a Python-version failure — do not read it as one.
 - **Sync must stay incremental *and* idempotent.** Repeated syncs and schema
   migrations must not duplicate rows; `qcut sync --full` is the documented
   rebuild path. Pinned by `test_repeated_syncs_do_not_duplicate_rows` and
-  `test_only_the_appended_tail_is_indexed`. An offset must always land on a line
+  `test_only_the_appended_tail_is_indexed`. An offset must always land on a record
   boundary (`test_an_offset_always_lands_on_a_line_boundary`), so a trailing
-  partial line is left for the next run.
+  *partial* line is left for the next run — while a **complete** record that has not
+  been terminated yet is consumed, because a writer flushes the record and its
+  newline as two writes and a crash sits between them. A file that was
+  rewritten rather than appended to is re-read from zero: same length with a moved
+  mtime, a shortened file, or an offset that no longer follows a record boundary
+  (`_needs_reset`, `test_sync.RewrittenFileTest`).
+  **One table is deliberately not idempotent:** `unparsed(reason, count)` carries no
+  file attribution, so a re-read adds a file's earlier bad lines a second time.
+  `qcut sync --full` clears and re-derives it, which is the only way to correct it —
+  read `unparsed` as "at least this many", never as an exact count.
 - **Route origin is read, never guessed.** `provider` comes from the model string
   (`qoder-custom-<id>/<model>`) plus the configured `baseUrl` host. It is never
   inferred from the model *name*: a BYOK alias can look built-in (`qcfmodel`
