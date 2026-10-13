@@ -322,3 +322,27 @@ Evidence L0 2026-10-13 306 tests OK. Three provocations on throwaway copies, eac
 Cost     Five more Textual harness runs (the suite's slowest interpreter gains ~16 s), and
          a resize change must now keep rows and keys, not just render.
 Commit   5a52c4c
+
+### D-014 · 2026-10-13 · guard
+Symptom  A transcript that cannot be opened was already handled — `index_file` raised
+         through its `OSError`, the caller bumped a reason and stored no state for the
+         file — and no case had ever looked at any of it. Uncovered behaviour of this
+         kind has two failure modes, both silent: a future `try` that swallows the
+         error loses the *report*, and a future bookkeeping change that records an
+         offset for a skipped file retires it forever, with no reason attached and a
+         row missing from the index. Separately, AGENTS.md claimed an offset lands on a
+         **record** boundary while the only case proved the **newline** form, which the
+         unterminated-tail fix (D-012) had just made incomplete.
+Change   `test_sync.CrashSafetyTest` gains three cases on a chmod-000 transcript: the
+         run still indexes every readable file, `unparsed` carries an `unreadable_file`
+         reason, and nothing is remembered for the skipped file so the next run reads it
+         whole. One more case pins the offset after a consumed unterminated record — at
+         end of file, behind a `}`, a record boundary the line-boundary case cannot see.
+         The reason string is now the constant `UNREADABLE_FILE`, next to
+         `UNPARSEABLE_LINE`: a name an operator reads should not be typed at a call site.
+Evidence L0 2026-10-13 309 tests OK. Provoked on copies: letting the `OSError` escape
+         errors both unreadable cases; dropping the `_bump` fails the reported one alone;
+         writing a `sync_state` row on the failure path fails the retry one alone.
+Cost     One `os.chmod` and its cleanup per case, and any future error path for the
+         source files has to keep a skipped file un-remembered.
+Commit   926ba9a
