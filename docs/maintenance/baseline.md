@@ -139,13 +139,13 @@ python3 -m unittest discover -s scripts/tests
 | `test_snapshots.py` | 14 |
 | `test_format_registry.py` | 10 |
 | `test_maintenance_docs.py` | 11 |
-| `test_hermetic.py` | 10 |
+| `test_hermetic.py` | 13 |
 | `test_privacy.py` | 15 |
 | `test_dispatcher.py` | 9 |
 | `test_readme_bilingual.py` | 7 |
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
-| **total** | **310** |
+| **total** | **313** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is 71 s, the other
 thirteen together ~9 s.

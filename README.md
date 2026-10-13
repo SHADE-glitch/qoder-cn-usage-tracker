@@ -245,7 +245,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 310 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 313 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -269,7 +269,7 @@ this repository reaches the network.
 | `test_dispatcher.py` | 9 | `bin/qcut` routing, flag pass-through, and the failure modes that are the reason it is bash |
 | `test_format_registry.py` | 10 | an AST mirror of the format registry against the parser beside it: every field read is registered, every registered field is still read, the dispatch chain and the registry claim the same record types, and no separator, path segment or tool name is typed at a call site |
 | `test_maintenance_docs.py` | 11 | the generated format document equals what `qcut format` prints today, every maintenance asset is reachable from the router, every link resolves, and the CI matrix pins the floor `pyproject.toml` actually declares |
-| `test_hermetic.py` | 10 | the tripwire that keeps the suite off the real database: the protected path is recognised (and nothing else is), a connect aimed at it is refused, the hook is live end-to-end on a child spawn, the same child is allowed once `QCUT_DB` is pinned, and no test module may skip the import |
+| `test_hermetic.py` | 13 | the tripwire that keeps the suite off the real database and Qoder host: protected paths are refused, ordinary temp paths are allowed, the hook is live on child spawns, and children must pin `QCUT_DB` and `QCUT_QODER_DIR` |
 | `test_readme_counts.py` | 6 | every count in either README — each row and each total — equals the number read off the suites' syntax trees, and a suite on disk with no row fails as hard as a row pointing at a deleted file |
 | `test_readme_bilingual.py` | 7 | the two READMEs are one document in two languages: the same heading-marker sequence in the same order, so a section added, dropped *or moved* on one side alone goes red, and every in-page link resolves to a real heading |
 | `test_record_coverage.py` | 6 | a commit that touches a production script must leave a `D-###` entry in `CHANGELOG.md`; the coverage window is enumerated from `git log` rather than typed, the ids are gapless, and every cited hash must resolve |
@@ -289,7 +289,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 310 tests above |
+| `scripts/tests/` | the 313 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

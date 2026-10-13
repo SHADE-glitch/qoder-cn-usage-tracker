@@ -66,6 +66,7 @@ class PredicateTest(unittest.TestCase):
         from pathlib import Path as P
         expected = P.home() / ".local" / "share" / "qoder-cn-usage-tracker" / "usage.db"
         self.assertEqual(hermetic.PROTECTED, expected)
+        self.assertEqual(hermetic.PROTECTED_DIRS, (P.home() / ".qoder-cn",))
 
     def test_a_child_with_nothing_to_point_it_away_would_use_the_real_database(self):
         stats = str(SCRIPTS / "qcut-stats.py")
@@ -123,40 +124,58 @@ class EnforcementTest(unittest.TestCase):
         """An audit hook that was never installed passes every case above vacuously."""
         with self.assertRaises(hermetic.Refusal):
             subprocess.run([sys.executable, str(SCRIPTS / "qcut-stats.py"), "--help"],
-                           capture_output=True, env=_env_without_db())
+                           capture_output=True, env=_env_without_pins())
 
-    def test_the_same_child_is_allowed_once_its_database_is_pinned(self):
-        """The matched pair for the case above.
-
-        Identical argv, one differing environment entry. Without this the previous case
-        would be satisfied by a hook that refuses every subprocess, and the rule would have
-        been replaced by a denial of service on the suite's own CLI tests.
-        """
-        env = _env_without_db()
+    def test_the_same_child_is_allowed_once_its_paths_are_pinned(self):
+        env = _env_without_pins()
         with tempfile.TemporaryDirectory() as tmp:
             env["QCUT_DB"] = str(Path(tmp) / "usage.db")
+            env["QCUT_QODER_DIR"] = str(Path(tmp) / "qoder-cn")
             proc = subprocess.run(
                 [sys.executable, str(SCRIPTS / "qcut-stats.py"), "--help"],
                 capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("usage", proc.stdout.lower())
 
+    def test_reading_the_real_host_footprint_is_refused(self):
+        root = hermetic.PROTECTED_DIRS[0]
+        host_file = str(root / "fixture.jsonl")
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("open", (host_file, "r", 0))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("os.scandir", (str(root),))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("sqlite3.connect", (str(root / "state.db"),))
+
+    def test_an_ordinary_test_host_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = str(Path(tmp) / "fixture.jsonl")
+            self.assertIsNone(hermetic._protected_read(candidate))
+            hermetic._hook("open", (candidate, "r", 0))
+            hermetic._hook("os.scandir", (tmp,))
+
+    def test_a_child_that_would_read_the_real_host_is_refused(self):
+        stats = str(SCRIPTS / "qcut-stats.py")
+        self.assertTrue(hermetic._child_would_read_the_real_host({"PATH": "/usr/bin"}))
+        self.assertFalse(hermetic._child_would_read_the_real_host(
+            {"QCUT_QODER_DIR": "/tmp/qoder-cn"}))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("subprocess.Popen", (
+                sys.executable, [sys.executable, stats, "health"], None,
+                {"QCUT_DB": "/tmp/usage.db"}))
+
     def test_an_unrelated_subprocess_is_not_refused(self):
         proc = subprocess.run([sys.executable, "-c", "print('ran')"],
-                              capture_output=True, text=True, env=_env_without_db())
+                              capture_output=True, text=True, env=_env_without_pins())
         self.assertEqual(proc.returncode, 0)
         self.assertIn("ran", proc.stdout)
 
 
-def _env_without_db():
-    """The ambient environment minus anything that pins a database.
-
-    A copy with ``QCUT_DB`` removed is what a test that forgot to pin would hand the child,
-    and it is also what this case needs: the parent's own environment must not rescue the
-    child, which is the whole reason a child is a hole in the in-process rule.
-    """
+def _env_without_pins():
+    """The ambient environment minus anything that pins the database or host dir."""
     env = dict(os.environ)
     env.pop("QCUT_DB", None)
+    env.pop("QCUT_QODER_DIR", None)
     return env
 
 
