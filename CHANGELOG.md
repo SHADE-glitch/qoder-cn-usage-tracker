@@ -224,3 +224,36 @@ Cost     Adding an import is now a two-edit change — the file and its declared
          dropping one has to shrink the list. Scope is unchanged and still stated: this inspects
          this repository's four scripts, not a third-party package's imports.
 Commit   5830604
+
+### D-011 · 2026-10-13 · fix
+Symptom  Three places where a report answered about something it had never seen. (1)
+         `qcut show <unknown name>` printed a complete report of zeros:
+         `q_entity_summary` is an aggregate over `WHERE name = ?`, so an entity that
+         does not exist and an entity idle in this window both return `COUNT(*) = 0`,
+         and only one of them is a measurement. (2) `qcut stats` claimed `all time`
+         and never said how far the index reaches; the span it did compute
+         (`q_overview["last_ts"]`) was `MAX(model_calls)` falling back to tool calls
+         only when that table was empty — and the TUI's status line reads the same
+         key, so a newer MCP or skill call was invisible in both places. (3)
+         `format --write` **appended** its block when the markers were gone, leaving a
+         document with two copies of the same surface of which only one is ever
+         regenerated again.
+Change   `db.q_entity_exists` asks existence deliberately **without** a window; `show`
+         refuses an unknown name with rc 1 on stderr and keeps the honest zeros for a
+         known-but-idle one. `q_overview` now takes a true min/max over every usage
+         table carrying a `ts` and `stats` prints `range  <first> .. <last>`, with `-`
+         when there is no endpoint at all rather than a pair of dashes that would read
+         as one instant. `format --write` refuses and names the marker it could not
+         find, writing nothing, and gained `--out` — the only way to test a splice, a
+         refusal and a fixed point without a case rewriting a tracked file.
+Evidence L0 2026-10-13 294 tests OK (3.11.15 / 3.13.14 / 3.14.4). L1 against the live
+         transcripts into a throwaway store: `range 2026-09-22 16:04 .. 2026-10-13 10:19`
+         over 31,588 responses, `show tool NoSuchTool` → rc 1, `show tool Bash --range 1d`
+         → rc 0 with 497 calls. Provoked on a copy with the pre-patch data layer and CLI:
+         9 of the 10 new cases fail; the tenth (`show` on a known-but-idle name) passes
+         before and after on purpose — it is the half that keeps the new refusal from
+         swallowing real zeros.
+Cost     One extra `SELECT 1 … LIMIT 1` per `show`, and seven min/max scans instead of
+         two, on a report that already reads the whole index. AGENTS.md now states the
+         rule: an existence test may not be inferred from an aggregate.
+Commit   bc941f8

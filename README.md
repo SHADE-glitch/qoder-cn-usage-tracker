@@ -188,7 +188,7 @@ qcut sync --full         # ♻️  rebuild the database from scratch
 qcut stats               # 📊  overview of all categories
 qcut tools|skills|agents|plugins|mcp
 qcut models              # 🔢  per-model tokens + credits
-qcut show tool Bash      # 🔍  recent calls for one entity
+qcut show tool Bash      # 🔍  calls for one entity; rc 1 if the index never saw it
 qcut recent              # 🕒  latest tool calls
 qcut inventory           # 📦  what is installed, used vs unused
 qcut export              # 💾  dump every table as JSON

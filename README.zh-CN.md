@@ -161,7 +161,7 @@ qcut sync --full         # ♻️  从零重建数据库
 qcut stats               # 📊  各类别总览
 qcut tools|skills|agents|plugins|mcp
 qcut models              # 🔢  按模型的 token + 积分
-qcut show tool Bash      # 🔍  某个实体的近期调用
+qcut show tool Bash      # 🔍  某个实体的调用；索引从没见过它就 rc 1
 qcut recent              # 🕒  最近的工具调用
 qcut inventory           # 📦  已安装清单，用过 vs 未用
 qcut export              # 💾  把每张表导出为 JSON
