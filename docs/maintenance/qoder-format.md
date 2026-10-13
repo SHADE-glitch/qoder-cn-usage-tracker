@@ -38,3 +38,22 @@ own files. Re-verify after a Qoder update; the procedure is in [`MAINTENANCE.md`
 - mcp target: `mcp__<server>__<tool>` in the `toolName` argument
 - custom route: `<providerId>/<model>`, prefix `qoder-custom-`
 <!-- END GENERATED -->
+## Where a slash command comes from
+
+Two fields, and they are not the same kind of evidence:
+
+- `toolUseResult.commandName` on a `user` record. Observed on this machine: 2 records
+  out of 181,907 lines, values `playwright-cli` and
+  `qoder-context:qoder-context-knowledge-plan`. This is the only command source
+  that has ever produced a row here.
+- A `<command-name>name</command-name>` marker in the **text of a `user` record**.
+  Qoder has not written one here yet, so the reader is a hypothesis about the
+  format rather than a measured field -- it is kept because a marker that opens a
+  user text block can only be an echo of an invocation.
+
+The scan deliberately does *not* run over `assistant` text blocks. The marker
+appears 7 times in the transcripts on this machine and all 7 are an agent quoting
+the tag inside an explanation, including 4 in subagent transcripts, which
+`projects/**/*.jsonl` indexes. Reading them as commands would record usage that
+never happened, and it would store a slice of model prose -- the one thing this
+tool never keeps. `test_sync.CommandTest` holds both halves of that line.

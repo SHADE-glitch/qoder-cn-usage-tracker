@@ -159,9 +159,13 @@ RECORD_FIELDS = frozenset({
 MESSAGE_FIELDS = frozenset({
     "id", "type", "model", "stop_reason", "content", "usage",
 })
-# The text block of a message — the only place a slash-command name can appear.
-# Reading the block's *text* is not metadata: only the string inside the
-# `<command-name>` marker is kept, which is what `CMD_RE` matches.
+# The text block of a message — the only place a slash-command *marker* is read
+# from. Reading the block's *text* is not metadata: only the string inside
+# the `<command-name>` marker is kept, which is what `CMD_RE` matches. That is
+# also why the scan runs over `user` records only: a `user` block that opens
+# with the marker is the shell echoing an invocation, while an `assistant` block
+# containing it is the model quoting it — storing that would turn a worked
+# example into a command that was never run.
 TEXT_BLOCK_FIELDS = frozenset({"type", "text"})
 USAGE_FIELDS = frozenset({
     "input_tokens", "output_tokens",
@@ -668,7 +672,6 @@ def _handle_record(conn, rec, providers, skill_owner, fallback_project, counts) 
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     _record_tool_use(conn, rec, block, ts, project, skill_owner, counts)
-        _record_commands(conn, rec, msg, ts, project, counts)
     elif rtype == "user":
         msg = rec.get("message")
         if not isinstance(msg, dict):
@@ -678,6 +681,7 @@ def _handle_record(conn, rec, providers, skill_owner, fallback_project, counts) 
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     _record_tool_result(conn, rec, block, ts, counts)
+        _record_commands(conn, rec, msg, ts, project, counts)
     elif rtype == "runtime-config":
         sid = rec.get("sessionId")
         model = rec.get("model")

@@ -316,6 +316,89 @@ class EntityClassificationTest(unittest.TestCase):
             conn.close()
 
 
+class CommandTest(unittest.TestCase):
+    """Where a slash-command name comes from, and what must never become one.
+
+    Two sources write the `commands` table: a `<command-name>` marker in the text
+    of a *user* record, and a `commandName` field on a tool result. The marker is
+    the only place in the whole parser that reads the text of a message, so these
+    cases also hold the line around it.
+    """
+
+    def setUp(self):
+        self.t = TempTree(self)
+
+    def test_a_command_quoted_by_the_model_is_not_recorded_as_an_invocation(self):
+        """An assistant block containing a well-formed marker is prose.
+
+        The real transcripts on this machine hold seven such markers and every one
+        is an agent quoting the tag in an explanation, none of them a command the
+        user ran. Storing them would invent usage. The user record in the same
+        file is the control: the scan itself works.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                {"type": "text",
+                 "text": ("Here is the shape of the marker:\n"
+                          "```\n<command-name>/never-ran</command-name>\n```\n"
+                          "it echoes the invocation back.")},
+            ]),
+            {"type": "user", "sessionId": "s1", "uuid": "uuid-u1",
+             "timestamp": "2026-10-01T10:00:05.000Z", "cwd": "/work/demo",
+             "isSidechain": False,
+             "message": {"role": "user", "content": [
+                 {"type": "text",
+                  "text": "<command-name>/deploy-staging</command-name>"}]}},
+        ])
+        self.t.sync()
+        self.assertEqual(
+            [r["command"] for r in self.t.rows("SELECT command FROM commands")],
+            ["deploy-staging"])
+
+    def test_a_command_name_on_a_tool_result_is_recorded(self):
+        """The other source, and the only one observed in real transcripts."""
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[tool_use("c1", "Bash", command="ls")]),
+            tool_result("r1", "c1", commandName="playwright-cli"),
+        ])
+        self.t.sync()
+        row = self.t.one("SELECT * FROM commands")
+        self.assertEqual(row["command"], "playwright-cli")
+        self.assertEqual(row["session_id"], "s1")
+
+    def test_nothing_outside_the_command_marker_reaches_a_column(self):
+        """The marker's contents are stored; the prose around it is not."""
+        sentinel = "SENTINEL-AROUND-MARKER-4c1f"
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            {"type": "user", "sessionId": "s1", "uuid": "uuid-u1",
+             "timestamp": "2026-10-01T10:00:05.000Z", "cwd": "/work/demo",
+             "isSidechain": False,
+             "message": {"role": "user", "content": [
+                 {"type": "text",
+                  "text": f"{sentinel}\n<command-name>/show-usage</command-name>\n"
+                          f"{sentinel}"}]}},
+        ])
+        self.t.sync()
+        self.assertEqual(
+            [r["command"] for r in self.t.rows("SELECT command FROM commands")],
+            ["show-usage"])
+        conn = self.t.conn()
+        try:
+            for (table,) in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"):
+                cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+                text_cols = [c for c in cols if c not in ("key", "value")]
+                if not text_cols:
+                    continue
+                where = " OR ".join(f"CAST({c} AS TEXT) LIKE ?" for c in text_cols)
+                hit = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {where}",
+                    [f"%{sentinel}%"] * len(text_cols)).fetchone()[0]
+                self.assertEqual(hit, 0, f"{sentinel} leaked into {table}")
+        finally:
+            conn.close()
+
+
 class InventoryTest(unittest.TestCase):
     def setUp(self):
         self.t = TempTree(self)

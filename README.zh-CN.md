@@ -205,14 +205,14 @@ sync_secs = 30       # TUI 自动同步周期
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 275 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 278 tests ... OK
 ```
 
 测试套件是 `unittest`（`pytest` 也能发现它们）。其中两套需要安装 `textual`：`test_tui.py`，以及 `test_config.py`——后者的接线用例会把 TUI 模块加载起来，用以证明每个设置项真的到达渲染器。每个套件都在临时目录里自建一次性数据库**以及**一次性 Qoder 目录树——你真实的 `usage.db` 与 `~/.qoder-cn` 从不会被打开，仓库中也没有任何代码路径会访问网络。
 
 | 套件 | 用例数 | 覆盖范围 |
 |---|---:|---|
-| `test_sync.py` | 43 | 转录解析、归类（工具 / 技能 / 代理 / MCP）、路由来源、清单、增量与全量重建、带时间戳的状态配对、未认领记录统计、schema 里**每一张表**的幂等性、崩溃安全 |
+| `test_sync.py` | 46 | 转录解析、归类（工具 / 技能 / 代理 / MCP）、路由来源、清单、增量与全量重建、带时间戳的状态配对、未认领记录统计、schema 里**每一张表**的幂等性、崩溃安全 |
 | `test_usage.py` | 53 | 自然日窗口、缓存命中率、全部查询辅助函数、「已安装 ∪ 用过」并集、token/积分那**同一条**上报判定及其 SQL↔Python 镜像、schema、最小版的 snapshot→list→restore 往返、尚无数据库的全新安装，以及无头报表的措辞 |
 | `test_stats.py` | 33 | 无头 CLI 的端到端：每个子命令都真的调用 `main([...])`，`--db` 与 `--limit`、只读连接、索引过期时的拒绝并指出修法、`export` / `inventory` / `recent` / `show` / `health`、损坏设置文件报成一句话而不是抛栈、`backup`/`restore` 这一对，以及入口脚本绝不碰它没被给过的路径 |
 | `test_snapshots.py` | 14 | 破坏性步骤的回退之路：快照在改动**之前**取、是在线备份而非把还在 `-wal` 里的主文件按字节拷贝、restore 保留它覆盖掉的状态、回收只删自己生成的文件，以及丢了偏移量的索引仍然值得一份快照 |
@@ -239,7 +239,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-sync.py` | 转录解析器与增量索引器（`--full`、`--quiet`） |
 | `scripts/qcut-stats.py` | 无头报表 |
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
-| `scripts/tests/` | 上述 275 个用例 |
+| `scripts/tests/` | 上述 278 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |
