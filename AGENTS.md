@@ -2,18 +2,10 @@
 
 Guidance for AI coding agents working in this repository.
 
-> **Dimension.** This repository is dimension **A — open source, strict** in the machine-wide
-> `CONVENTIONS.md` (outside this repository); the shared rules live in `STANDARD.md` and the
-> dimension-A detail in `~/.agents/standards/dimensions/a.md`.
->
-> **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
-> `CHANGELOG` entry format and the runtime ignore list are defined once in the machine-wide
-> `STANDARD.md` (outside this repository); the dimension-A rules — the language policy, CI
-> version pinning and entry commands, and the test entry command — live in
+> **Dimension.** A — open source (strict), per `CONVENTIONS.md` §0; the shared rules live once in
+> `~/.agents/standards/STANDARD.md` (§1 root files, §2 process drafts, §3 CHANGELOG entries,
+> §4 runtime ignore list, §6 remotes/pushing, §8 profile listing) and the dimension-A detail in
 > `~/.agents/standards/dimensions/a.md`. Neither is restated here.
->
-> **Push over SSH, never HTTPS.** Verify `git remote get-url --push origin` starts with `git@`
-> before pushing; if it starts with `https://`, fix it first — never push over HTTPS.
 
 ## What this is
 
@@ -306,19 +298,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
 
 ## Recording conventions
 
-- **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
-  feature is the product, not a droppable deviation — features are documented in the READMEs. The
-  exclusion is one regex over the commit subject inside the check; it must not decay into a
-  per-commit skip flag.
-- `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore`, cut by **who may demand a
-  revert**: bug → `fix`; measurable degradation only → `perf`; only my taste → `taste` (zero
-  obligation, discardable on an upgrade); no behaviour change, detects drift → `guard`; withdraws
-  earlier work → `revert`; cleanup owed nothing either way → `chore`.
-- **An empty covered window is legal only when the header says so.** If the window contains covered
-  commits but the record has no entries, the check fails: a pass over an empty set proves nothing.
-- `Symptom` names the mechanism, never the session: no prompt text, no command lines, no tool
-  argument values, no real paths from `~/.qoder-cn`. The record is held to the same
-  metadata-not-content rule as the code.
+Common CHANGELOG rules: `STANDARD.md` §3.
+
+- The `feat` exclusion is one regex over the commit subject inside the check; it must not decay
+  into a per-commit skip flag. Features are documented in the READMEs.
+- The record is held to the same metadata-not-content rule as the code.
 - Run the coverage check before committing production code:
   `python3 -m unittest scripts.tests.test_record_coverage`. It is part of the suite.
 
@@ -458,12 +442,3 @@ wrong here, and misses one:
 - **What *may* be copied** is the strongest true claim here: this repository really does store
   metadata only — `test_privacy.py::MetadataOnlyTest` scans sentinels across every text column of
   every table — so "no message bodies" is true, and worth saying.
-
-<dcp-system-reminder>
-You've been iterating for a while after the last user message.
-
-If there is a closed portion that is unlikely to be referenced immediately (for example, finished research before implementation), use the compress tool on it now.
-
-Compressed block context:
-- Active compressed blocks in this session: 1 (b5)
-</dcp-system-reminder>
