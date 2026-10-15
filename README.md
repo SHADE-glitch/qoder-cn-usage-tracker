@@ -9,6 +9,14 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 
+**What it is** — A passive, read-only tracker for [Qoder CN](https://qoder.com.cn): an eight-tab TUI and headless reports over every tool, skill, subagent, plugin, MCP server and model you use, plus the credits each one cost.
+
+**What it solves** — Qoder CN writes one transcript per session and per subagent run; `qcut` folds them into one local SQLite file so usage, tokens and credits are visible in one place.
+
+**How to run** — `./install.sh`, then `qcut sync`.
+
+**Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
+
 > 🔭 See how you **actually** use [Qoder CN](https://qoder.com.cn) —
 > every 🧰 tool, 🎯 skill, 🤖 subagent, 🧩 plugin, 🔌 MCP server and 🔢 model,
 > plus the 💳 credits each one cost.

@@ -9,6 +9,14 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 
+**是什么** —— 一个针对 Qoder CN 的被动只读追踪器：八标签页 TUI 与无头报告，覆盖你用到的每一个工具、技能、子代理、插件、MCP 服务与模型，以及它们各自花掉的积分。
+
+**解决什么** —— Qoder CN 每个会话、每次子代理运行各写一个转录文件；`qcut` 把它们归并进一个本地 SQLite 文件，让用量、token 与积分一目了然。
+
+**怎么跑** —— `./install.sh`，然后 `qcut sync`。
+
+**去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。
+
 > 🔭 看清你**实际**是怎么用 [Qoder CN](https://qoder.com.cn) 的——
 > 每一个 🧰 工具、🎯 技能、🤖 子代理、🧩 插件、🔌 MCP 服务与 🔢 模型，
 > 以及它们各自花掉的 💳 积分。
