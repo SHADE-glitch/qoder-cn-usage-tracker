@@ -251,10 +251,10 @@ tool runs from a checkout, so the version only needs to move when a documented c
   the **uncapped** row, so two entities that render identically still route to
   their own detail screen. Do not cap by truncating the key — that was a real bug
   (`Grep` and `Glob` collided once the cap engaged).
-- **Never commit runtime state or working notes**: `usage.db`, its `-wal`/`-shm`
-  side files, `.venv/`, `__pycache__/`, `backups/`, and the session reports under
-  `reports/`. Long-lived maintenance material goes in `docs/maintenance/` and
-  *is* committed.
+- **Never commit runtime state or working notes** — `STANDARD.md` §4 and §2 hold the
+  ignore list and the process-draft location; this repo adds `usage.db`, its `-wal`/`-shm`
+  side files and `backups/`. Long-lived maintenance material goes in `docs/maintenance/`
+  and *is* committed.
 
 ## Conventions
 
@@ -268,9 +268,6 @@ tool runs from a checkout, so the version only needs to move when a documented c
   six reports that pass it to a query, and `--range` only to `show`, which is the
   one command with a window argument. A flag the parser accepts and the report
   ignores reads as a filter that worked.
-- **Docs are bilingual**: `README.md` (English, landing page) and
-  `README.zh-CN.md` (Chinese). Edit both together and keep section order aligned;
-  a section added on one side alone is drift.
 - **Settings are read once, in one place.** `db.load_config()` resolves
   environment > file > `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`,
   one in `ENV_NAMES`, one in `_BOUNDS`, and one assignment where the value is
@@ -293,6 +290,12 @@ tool runs from a checkout, so the version only needs to move when a documented c
   file or the defaults is asserting them *under* the environment, which outranks
   both. `test_config.py` wraps those cases in `no_settings_env()`, which hides
   every name derived from `db.ENV_NAMES`.
+
+## Docs & commits
+
+- **Docs are bilingual**: `README.md` (English, landing page) and
+  `README.zh-CN.md` (Chinese). Edit both together and keep section order aligned;
+  a section added on one side alone is drift.
 - Commit messages are **English** and follow Conventional Commits
   (`feat:` / `fix:` / `docs:` / `chore:`), code before docs.
 
