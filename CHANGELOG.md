@@ -450,3 +450,20 @@ Cost     The manifest and ignore lists are hard-coded, so a deliberate second ma
          editing that constant as well; this entry is the first time it has moved.
 
 Commit   18c6668
+
+### D-019 · 2026-10-16 · chore
+Symptom  The pointer in AGENTS.md is followed only by an agent that chooses to follow it: it named
+         `~/.agents/standards/`, but nothing made that text reach the context, and the section list
+         it carried had drifted — §5 (the conflict rule) was missing.
+Change   End the pointer block with two bare `@` imports (`@~/.agents/standards/STANDARD.md`,
+         `@~/.agents/standards/dimensions/a.md`) and add `opencode.json`, whose `instructions` array
+         names the same two files. Add `§5 conflict rule` to the section list. `test_conventions.py`'s
+         `ROOT_FILES` gains `opencode.json`.
+Evidence 2026-10-16: CodeBuddy CLI (`-p --tools ''`, every tool disabled) in a directory whose only
+         memory file was an `AGENTS.md` carrying the two imports printed the tokens they carried — the
+         text is injected, not read by a tool. opencode `run` printed the token its `instructions`
+         named, with no tool call. `python3 -m pytest scripts/tests/test_conventions.py -q`
+         9 passed.
+Cost     Both hooks name `~/.agents`, absent in another clone, so they are skipped there — the
+         pointer stays the portable part. Nothing is copied, so nothing can drift.
+Commit   3d8cdd6
