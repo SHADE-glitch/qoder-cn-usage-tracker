@@ -256,7 +256,7 @@ tool runs from a checkout, so the version only needs to move when a documented c
   the **uncapped** row, so two entities that render identically still route to
   their own detail screen. Do not cap by truncating the key — that was a real bug
   (`Grep` and `Glob` collided once the cap engaged).
-- **Never commit runtime state or working notes** — `STANDARD.md` §4 and §2 hold the
+- **Never commit runtime state or working notes** — `~/.agents/standards/STANDARD.md` §4 and §2 hold the
   ignore list and the process-draft location; this repo adds `usage.db`, its `-wal`/`-shm`
   side files and `backups/`. Long-lived maintenance material goes in `docs/maintenance/`
   and *is* committed.
@@ -306,7 +306,7 @@ tool runs from a checkout, so the version only needs to move when a documented c
 
 ## Recording conventions
 
-Common CHANGELOG rules: `STANDARD.md` §3.
+Common CHANGELOG rules: `~/.agents/standards/STANDARD.md` §3.
 
 - The `feat` exclusion is one regex over the commit subject inside the check; it must not decay
   into a per-commit skip flag. Features are documented in the READMEs.
