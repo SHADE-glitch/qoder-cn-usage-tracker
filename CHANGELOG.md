@@ -476,3 +476,16 @@ Change   Both references now carry the full ~/.agents/standards/STANDARD.md path
 Evidence 2026-10-19: python3 -m unittest discover -s scripts/tests — 323 tests, OK.
 Cost     None; wording only.
 Commit   c83ea2d
+
+### D-021 · 2026-10-19 · fix
+
+Symptom  The `test_tui.py` row of the suite table carried two orphan lines beneath it, each
+         starting with `|`; GitHub rendered them as two extra one-cell rows.
+Change   The two orphan lines are gone. They were the tail of the sentence this row replaced in
+         c26710a, left behind when the row was rewritten to "which screen owns the rows of which
+         table"; the row is one line again, as its pipe count says.
+Evidence 2026-10-19: every table block in README.md now has a uniform pipe count;
+         `python3 -m unittest discover -s scripts/tests` — 323 tests, OK.
+Cost     None; no test or CI file was touched.
+
+Commit   bc5f4cc
