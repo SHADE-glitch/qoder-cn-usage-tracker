@@ -467,3 +467,12 @@ Evidence 2026-10-16: CodeBuddy CLI (`-p --tools ''`, every tool disabled) in a d
 Cost     Both hooks name `~/.agents`, absent in another clone, so they are skipped there — the
          pointer stays the portable part. Nothing is copied, so nothing can drift.
 Commit   3d8cdd6
+
+### D-020 · 2026-10-19 · chore
+
+Symptom  AGENTS.md cited the shared standard by bare STANDARD.md, a name that only resolves via
+         the pointer block above it.
+Change   Both references now carry the full ~/.agents/standards/STANDARD.md path.
+Evidence 2026-10-19: python3 -m unittest discover -s scripts/tests — 323 tests, OK.
+Cost     None; wording only.
+Commit   c83ea2d
