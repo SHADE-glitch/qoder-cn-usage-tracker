@@ -1,6 +1,6 @@
 # Maintenance notes
 
-Everything here exists because **Qoder CN upgrading its transcripts is the main maintenance risk**
+Everything here exists because **Qoder CN CLI upgrading its transcripts is the main maintenance risk**
 for this tool: a renamed field or record type produces no error — the panels empty out, `qcut sync`
 prints "done", and CI stays green.
 

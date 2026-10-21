@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""qcut-sync — index Qoder CN's own session transcripts into the tracker database.
+"""qcut-sync — index the Qoder CN CLI's own session transcripts into the tracker database.
 
 Passive reader: walks ``~/.qoder-cn/projects/**/*.jsonl`` (session transcripts),
 classifies every tool call into one of the five tracked categories, and upserts
@@ -88,17 +88,17 @@ CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
 # runs to tens of thousands of records, and quietly counting them as "unparsed"
 # would make the signal useless.
 CLAIMED_RECORD_TYPES = frozenset({
-    "assistant", "user", "runtime-config", "workspace-directories",
+    "assistant", "user", "system", "runtime-config", "workspace-directories",
 })
 NOOP_RECORD_TYPES = frozenset({
     "active-leaf", "ai-title", "attachment", "file-history-snapshot", "last-prompt",
-    "custom-title", "worktree-state", "system",
+    "custom-title", "worktree-state",
 })
 # `last-prompt`, `custom-title` and the CLI 1.1.75 `ai-title` carry free prose
 # (the user's own prompt and the AI-written title). They are claimed and dropped,
-# never read. `system` is dropped too: it has no branch, and a type in CLAIMED
-# with no handler is the one mistake this split exists to prevent — it would
-# read as "parsed".
+# never read. `system` is claimed for one subtype only — the compaction boundary;
+# every other system event is still dropped without being counted as unparsed.
+COMPACT_SUBTYPE = "compact_boundary"
 
 # --- classification tables -------------------------------------------------
 
@@ -155,9 +155,18 @@ RECORD_FIELDS = frozenset({
     "type", "timestamp", "message", "isSidechain", "cwd", "sessionId",
     "entrypoint", "version", "gitBranch", "customProviderId", "toolUseResult",
     "directories",
+    # A subagent response carries the launching Agent call id at the top level;
+    # `agentId` names the run's own transcript. Both are ids, never content.
+    "parent_tool_use_id", "agentId",
+    # `system` records are only useful for their subtype; the compaction metadata
+    # object is read field by field (COMPACT_FIELDS), never stored as a blob.
+    "subtype", "compactMetadata",
     # `runtime-config` names the session's model at the *top* level, not inside
     # `message`, so the same key is read off two different objects.
     "model",
+})
+COMPACT_FIELDS = frozenset({
+    "trigger", "preTokens", "postTokens", "messagesSummarized", "durationMs",
 })
 MESSAGE_FIELDS = frozenset({
     "id", "type", "model", "stop_reason", "content", "usage",
@@ -199,7 +208,7 @@ INVENTORY_JSON_FIELDS = frozenset({
 QODER_FIELDS = (RECORD_FIELDS | MESSAGE_FIELDS | TEXT_BLOCK_FIELDS
                 | USAGE_FIELDS | TOOL_USE_FIELDS
                 | TOOL_RESULT_FIELDS | TOOL_RESULT_META_FIELDS | TOOL_ARG_FIELDS
-                | INVENTORY_JSON_FIELDS)
+                | COMPACT_FIELDS | INVENTORY_JSON_FIELDS)
 
 # qcut's own vocabulary in the ``unparsed`` table — NOT Qoder fields.
 UNPARSEABLE_LINE = "unparseable_line"
@@ -511,8 +520,8 @@ def _record_model_call(conn, rec, msg, ts, project, providers) -> int:
             message_id, session_id, project, ts, model, provider, provider_id,
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             credits, original_credits, billable, request_id, context_usage_ratio,
-            stop_reason, is_sidechain, has_usage)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
+            stop_reason, is_sidechain, has_usage, parent_call_id, agent_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
         """,
         (
             message_id, rec.get("sessionId"), project, ts, model, provider, provider_id,
@@ -523,9 +532,37 @@ def _record_model_call(conn, rec, msg, ts, project, providers) -> int:
             usage.get("request_id"), usage.get("context_usage_ratio"),
             msg.get("stop_reason"),
             1 if rec.get("isSidechain") else 0,
+            rec.get("parent_tool_use_id"), rec.get("agentId"),
         ),
     )
     return cur.rowcount or 0
+
+
+def _record_compaction(conn, rec, ts, project, counts) -> None:
+    """Index a `compact_boundary` event from its `compactMetadata` only.
+
+    The record's own summarized messages are prose and are never touched: the
+    metadata is five numbers and a trigger word. The session row is updated too,
+    so a compaction-only file still gives the session its span.
+    """
+    meta = rec.get("compactMetadata")
+    sid = rec.get("sessionId")
+    if not isinstance(meta, dict) or not sid or ts is None:
+        return
+    _upsert_session(conn, rec, ts, project)
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO compactions(
+            session_id, ts, project, trigger, pre_tokens, post_tokens,
+            messages_summarized, duration_ms)
+        VALUES(?,?,?,?,?,?,?,?)
+        """,
+        (sid, ts, project, meta.get("trigger"), meta.get("preTokens"),
+         meta.get("postTokens"), meta.get("messagesSummarized"),
+         meta.get("durationMs")),
+    )
+    if cur.rowcount:
+        _bump(counts, "compactions")
 
 
 def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None:
@@ -690,6 +727,9 @@ def _handle_record(conn, rec, providers, skill_owner, fallback_project, counts) 
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     _record_tool_result(conn, rec, block, ts, counts)
         _record_commands(conn, rec, msg, ts, project, counts)
+    elif rtype == "system":
+        if rec.get("subtype") == COMPACT_SUBTYPE:
+            _record_compaction(conn, rec, ts, project, counts)
     elif rtype == "runtime-config":
         sid = rec.get("sessionId")
         model = rec.get("model")
@@ -817,10 +857,11 @@ def _needs_reset(path: Path, st, row) -> bool:
 def format_doc() -> str:
     """The format surface `qcut format` prints and docs/maintenance carries."""
     lines = [
-        "# Qoder CN format surface",
+        "# Qoder CN CLI format surface",
         "",
-        "Generated by `qcut format`. Everything this tool assumes about Qoder CN's",
-        "own files. Re-verify after a Qoder update; the procedure is in "
+        "Generated by `qcut format`. Everything this tool assumes about the",
+        "**Qoder CN CLI**'s own files (the IDE/app is out of scope). Re-verify after",
+        "a Qoder update; the procedure is in "
         "[`MAINTENANCE.md`](../../MAINTENANCE.md).",
         "",
         "## Layout (relative to ~/.qoder-cn)",
@@ -836,6 +877,8 @@ def format_doc() -> str:
         "",
         f"- claimed: {', '.join(sorted(CLAIMED_RECORD_TYPES))}",
         f"- claimed and dropped: {', '.join(sorted(NOOP_RECORD_TYPES))}",
+        f"- `system` subtype indexed: `{COMPACT_SUBTYPE}` (metadata only;"
+        " every other subtype is dropped)",
         "- anything else is counted in `unparsed` as `type:<name>`",
         "",
         "## Fields read",
@@ -845,6 +888,7 @@ def format_doc() -> str:
         ("record", RECORD_FIELDS), ("message", MESSAGE_FIELDS),
         ("usage", USAGE_FIELDS), ("tool_use", TOOL_USE_FIELDS),
         ("tool_result", TOOL_RESULT_FIELDS), ("toolUseResult", TOOL_RESULT_META_FIELDS),
+        ("compactMetadata", COMPACT_FIELDS),
         ("tool arguments", TOOL_ARG_FIELDS), ("inventory JSON", INVENTORY_JSON_FIELDS),
     ):
         lines.append(f"- {label}: {', '.join(sorted(fields))}")
@@ -938,7 +982,7 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
 
     for reason, n in counts.items():
         if reason in ("model_calls", "tool_calls", "tool_results", "skill_calls",
-                      "agent_calls", "mcp_calls", "commands"):
+                      "agent_calls", "mcp_calls", "commands", "compactions"):
             continue
         db.note_unparsed(conn, reason, n)
     conn.commit()
@@ -960,7 +1004,7 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Index Qoder CN transcripts.")
+    parser = argparse.ArgumentParser(description="Index Qoder CN CLI transcripts.")
     parser.add_argument("--full", action="store_true",
                         help="wipe the tracker tables and re-index every file")
     parser.add_argument("--quiet", action="store_true")

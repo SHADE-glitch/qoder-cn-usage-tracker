@@ -73,13 +73,14 @@ def m(minutes):
 
 # The tables `qcut export` dumps — the names a backup script reads.
 EXPORTED = ("sessions", "model_calls", "tool_calls", "skill_usage", "agent_usage",
-            "mcp_usage", "plugin_usage", "commands", "inventory", "unparsed")
+            "mcp_usage", "plugin_usage", "commands", "compactions", "inventory",
+            "unparsed")
 
 # Every subcommand that only reads, as the argv tail it is typed with, so one
 # list drives both the refusal and the "a report never writes" cases.
 READ_ONLY_COMMANDS = (("stats",), ("tools",), ("skills",), ("agents",), ("plugins",),
-                      ("mcp",), ("models",), ("commands",), ("recent",),
-                      ("inventory",), ("export",), ("env",),
+                      ("mcp",), ("models",), ("projects",), ("commands",),
+                      ("recent",), ("inventory",), ("export",), ("env",),
                       ("show", "tool", "Bash"))
 
 
@@ -173,6 +174,10 @@ def seed_db(path):
         "INSERT INTO commands(command, session_id, project, ts) VALUES(?,?,?,?)",
         [("compact", "s1", "/work/demo", m(0)),
          ("review", "s1", "/work/demo", m(1))])
+    conn.execute(
+        "INSERT INTO compactions(session_id, ts, project, trigger, pre_tokens,"
+        " post_tokens, messages_summarized, duration_ms) VALUES"
+        " ('s1',?,'/work/demo','auto',900,200,7,4000)", (m(2),))
     conn.executemany(
         "INSERT INTO inventory(kind, name, owner_plugin, version, path, source)"
         " VALUES(?,?,?,?,?,?)",
@@ -202,7 +207,7 @@ class StatsReportTest(unittest.TestCase):
     def test_stats_prints_the_indexed_counts_through_the_real_entry_point(self):
         rc, out, err = run("--db", self.t.db_path, "stats")
         self.assertEqual(rc, 0, err)
-        self.assertIn("Qoder CN usage — all time", out)
+        self.assertIn("Qoder CN CLI usage — all time", out)
         self.assertIn("sessions indexed     1", out)
         self.assertIn("projects             1", out)
         # Four tool calls, one of them an error and one with no result at all.
@@ -211,7 +216,7 @@ class StatsReportTest(unittest.TestCase):
         # panel is `used | installed`, not `used`.
         self.assertIn("distinct tools       5", out)
         self.assertIn("skill invocations    2  (2 distinct)", out)
-        self.assertIn("subagent calls       1  (1 types)", out)
+        self.assertIn("agent runs           1  (1 types)", out)
         self.assertIn("mcp calls            1  (1 servers)", out)
         self.assertIn("slash commands       2  (2 distinct)", out)
         # The seed's one response reports tokens, so the token lines are real
@@ -253,14 +258,80 @@ class StatsReportTest(unittest.TestCase):
                          ["playwright-cli", "1", "-"])
         self.assertIn(stamp(m(1)), rows["demo-skill"])
 
-    def test_the_agents_table_lists_a_type_with_its_calls(self):
+    def test_the_agents_table_lists_a_type_with_its_runs_and_cost_columns(self):
         rc, out, err = run("--db", self.t.db_path, "agents")
         self.assertEqual(rc, 0, err)
         rows = {line.split()[0]: line for line in body(out)}
         self.assertEqual(set(rows), {"Explore"},
                          "agents must list used types plus the inventory's")
-        self.assertEqual(cells(rows["Explore"], 3), ["Explore", "1", "1"])
+        # The seed's run has no linked response: requests read 0, and the token
+        # cell stays `-` (no measurement) rather than a fabricated 0.
+        self.assertEqual(cells(rows["Explore"], 4), ["Explore", "1", "1", "0"])
+        self.assertEqual(cells(rows["Explore"], 8)[4], "-")
+        self.assertIn("requests = responses linked by the", out)
         self.assertIn(stamp(m(3)), rows["Explore"])
+
+    def test_the_project_board_carries_cost_coverage_and_compaction_tax(self):
+        rc, out, err = run("--db", self.t.db_path, "projects")
+        self.assertEqual(rc, 0, err)
+        rows = body(out)
+        self.assertEqual(len(rows), 1, out)
+        self.assertIn("/work/demo", rows[0])
+        self.assertIn("100.0% (1/1)", rows[0])
+        self.assertEqual(cells(rows[0], 3), ["/work/demo", "1", "1"])
+        # 900 - 200 from the seeded compaction, shown beside the token sums and
+        # never added to them.
+        self.assertIn("700", rows[0])
+        self.assertIn("drill down: qcut projects <path>", out)
+
+    def test_the_project_count_is_the_ledger_not_the_tool_subset(self):
+        """The Dashboard's Projects counter must equal the board below it.
+
+        The seed's tool calls all live in `/work/demo`; a second project with a
+        request but no tool call used to make `stats` print 1 while `projects`
+        listed 2. Both now read the request ledger.
+        """
+        conn = db.open_db(self.t.db_path)
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, has_usage) VALUES"
+            " ('m-proj2','s-proj2','/work/other',?, 'qfmodel','builtin', 5,5,1)",
+            (m(2),))
+        conn.commit()
+        conn.close()
+        rc, out, err = run("--db", self.t.db_path, "stats")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("projects             2", out)
+        rc, out, err = run("--db", self.t.db_path, "projects")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(body(out)), 2,
+                         "the overview counter and the project board disagree")
+
+    def test_a_project_detail_prints_its_summary_and_sessions(self):
+        rc, out, err = run("--db", self.t.db_path, "projects", "/work/demo")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("project: /work/demo", out)
+        self.assertIn("requests", out)
+        self.assertIn("compactions", out)
+        self.assertIn("s1", out)
+        self.assertIn("qfmodel", out)
+
+    def test_an_unknown_project_is_not_an_empty_window(self):
+        rc, out, err = run("--db", self.t.db_path, "projects", "/never")
+        self.assertEqual(rc, 1)
+        self.assertIn("no such project: /never", err)
+        self.assertEqual(out, "")
+
+    def test_stats_splits_coverage_at_the_capture_boundary(self):
+        rc, out, err = run("--db", self.t.db_path, "stats")
+        self.assertEqual(rc, 0, err)
+        # The seed's only response is token-covered, so the split says the
+        # capture began at that call and nothing before it is unmeasurable.
+        self.assertIn("token capture began", out)
+        self.assertIn("before capture       0 requests", out)
+        self.assertIn("since capture        100.0% (1/1)", out)
+        self.assertIn("compactions          1  (700 context tokens dropped, 4.00s)",
+                      out)
 
     def test_the_mcp_table_splits_the_server_from_the_tool(self):
         rc, out, err = run("--db", self.t.db_path, "mcp")
@@ -309,6 +380,29 @@ class StatsReportTest(unittest.TestCase):
         # why the cache read is beside it and not added into it.
         self.assertRegex(out, r"api total = input \+ output")
         self.assertRegex(out, r"coverage = requests that reported any non-zero token")
+
+    def test_the_builtin_sentinel_is_never_printed_as_a_label(self):
+        """`models` and `show` carry the same one-column Provider label as the
+        TUI: the stored `builtin` sentinel reads `Built-in`, and a BYOK channel
+        keeps its own name."""
+        conn = db.open_db(self.t.db_path)
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, cache_read_tokens,"
+            " cache_creation_tokens, credits, has_usage) VALUES"
+            " ('m2','s1','/work/demo',?,'qfmodel','builtin',0,0,0,0,0.5,1)",
+            (m(1),))
+        conn.commit()
+        conn.close()
+        rc, out, err = run("--db", self.t.db_path, "models")
+        self.assertEqual(rc, 0, err)
+        rows = {line.split()[0]: line for line in body(out)}
+        self.assertIn("Built-in", rows["qfmodel"])
+        self.assertNotIn("builtin", rows["qfmodel"])
+        rc, out, err = run("--db", self.t.db_path, "show", "model", "qfmodel")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("provider=Built-in", out)
+        self.assertNotIn("provider=builtin", out)
 
     def test_a_limit_caps_a_report_at_the_largest_rows(self):
         # `ORDER BY calls DESC, tool_name` — so capping keeps Bash and Glob (a
@@ -406,7 +500,7 @@ class StatsReportTest(unittest.TestCase):
         """A bare `qcut --db …` must answer with the report, not with usage."""
         rc, out, err = run("--db", self.t.db_path)
         self.assertEqual(rc, 0, err)
-        self.assertIn("Qoder CN usage — all time", out)
+        self.assertIn("Qoder CN CLI usage — all time", out)
 
 
 class EmptyReportTest(unittest.TestCase):
@@ -944,7 +1038,7 @@ class FormatCliTest(unittest.TestCase):
     def test_format_prints_the_registry_and_needs_no_database(self):
         rc, out, err = run("format")           # no --db at all
         self.assertEqual(rc, 0, err)
-        self.assertTrue(out.startswith("# Qoder CN format surface"), out[:80])
+        self.assertTrue(out.startswith("# Qoder CN CLI format surface"), out[:80])
         for section in ("## Layout (relative to ~/.qoder-cn)", "## Record types",
                         "## Fields read", "## Classification"):
             self.assertIn(section, out, f"format lost its {section} section")
@@ -961,7 +1055,7 @@ class FormatCliTest(unittest.TestCase):
         rc, out, err = run("format", "--write", "--out", path)
         self.assertEqual(rc, 0, err)
         text = path.read_text(encoding="utf-8")
-        self.assertIn("# Qoder CN format surface", text)
+        self.assertIn("# Qoder CN CLI format surface", text)
         self.assertNotIn("old", text, "the generated block was not replaced")
         self.assertIn("## Hand-written section", text,
                       "the writer dropped what it did not generate")

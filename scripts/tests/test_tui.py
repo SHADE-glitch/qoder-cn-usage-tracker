@@ -14,8 +14,8 @@ from datetime import datetime
 from pathlib import Path
 
 # `_helpers` puts scripts/ on sys.path, so it must be imported before qcut_db.
-from _helpers import (SCRIPTS, TempTree, assistant, now_iso, tool_result,
-                      tool_use, usage)
+from _helpers import (SCRIPTS, TempTree, assistant, compact, now_iso,
+                      tool_result, tool_use, usage)
 
 import qcut_db as db
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
@@ -71,6 +71,14 @@ def build_db(case):
         assistant("s1", "m5", content=[
             tool_use("c5", "mcp_call", toolName="mcp__srv__work")],
             usage=usage(input_tokens=0, credits=1.0), ts=now_iso(-10)),
+        # The response the Agent run launched: linked by Qoder's own
+        # `parent_tool_use_id`, so the run's cost ledger and drill-down have a
+        # measured row rather than an empty list.
+        assistant("s1", "m6", parent_tool_use_id="c4", agentId="ag1",
+                  isSidechain=True,
+                  usage=usage(input_tokens=30, output_tokens=3, credits=0.5,
+                              context_usage_ratio=0.42), ts=now_iso(-14)),
+        compact("s1", ts=now_iso(-12), pre_tokens=1000, post_tokens=200),
     ])
     t.json_file("plugins/installed_plugins_v2.json", {
         "version": 2,
@@ -241,20 +249,25 @@ class RangeTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query_one("#date-range", Button).display)
             self.assertIsNone(app.ranges["plugins"])
 
-    def test_every_preset_the_select_offers_is_a_chip_in_the_picker(self):
-        """The two controls must not drift: one list feeds both.
+    def test_the_picker_chips_are_cbuts_six_shortcuts(self):
+        """The picker copies cbut's six chips, not the Select's whole list.
 
-        The Select is the window list and the picker is its editor, so a preset
-        reachable from one and not the other is a dead end in the UI. This walks
-        the two registries against each other rather than the rendered widget,
-        because a Select's options are built once at compose time.
+        cbut's Select offers 2 days and 3 days too, yet its picker carries six
+        height-3 chips. Seven do not fit: the row would need 60 cells in the
+        53-cell column and clip "All time". The extra ranges stay one click away
+        in the Select and remain reachable through the calendar.
         """
+        chips = [(label, key) for label, _wid, key in TUI.DateRangeModal.PRESETS]
+        self.assertEqual(chips, [("Today", "1d"), ("1d", "1d"), ("7d", "7d"),
+                                 ("14d", "14d"), ("30d", "30d"),
+                                 ("All time", "all")])
+        ids = [wid for _label, wid, _key in TUI.DateRangeModal.PRESETS]
+        self.assertEqual(len(ids), len(set(ids)), "duplicate chip ids")
         values = [value for _label, value in TUI.RANGE_OPTIONS]
-        presets = [key for _label, _wid, key in TUI.DateRangeModal.PRESETS]
-        self.assertEqual(presets, [v for v in values
-                                   if v != TUI.CUSTOM_RANGE])
-        self.assertIn(("Custom…", TUI.CUSTOM_RANGE), TUI.RANGE_OPTIONS)
-        self.assertEqual(set(presets), set(db.RANGE_ORDER))
+        self.assertIn("2d", values)
+        self.assertIn("3d", values)
+        for _label, key in chips:
+            self.assertIn(key, values)
 
 
 class DateRangeTest(unittest.IsolatedAsyncioTestCase):
@@ -282,15 +295,62 @@ class DateRangeTest(unittest.IsolatedAsyncioTestCase):
             modal = await self._open(pilot, app)
             self.assertIsInstance(modal, TUI.DateRangeModal)
 
-    async def test_the_picker_fits_an_80_column_terminal(self):
-        """The whole point of the width budget in its CSS: it must not clip."""
+    async def test_the_picker_keeps_cbuts_roomy_layout(self):
+        """The picker is cbut's, geometry included: height-3 shortcut chips, a
+        blank row between the preset row and the start card, another between the
+        two cards, and the default bordered "follows now" switch.
+
+        The box is 79x30, so at 80x30 it fits exactly. The width case is the
+        regression that forced the six-chip list: seven height-3 chips need 60
+        cells in a 53-cell column and clip "All time". The picker is shared, so
+        every windowed tab must render it the same way; Plugins hides the
+        control because its window is all-time.
+        """
+        from textual.widgets import Button
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
-        async with app.run_test(size=(80, 45)) as pilot:
+        async with app.run_test(size=(80, 30)) as pilot:
+            for tab in ("dashboard", "tools", "skills", "agents", "mcp",
+                        "tokens", "usage"):
+                modal = await self._open(pilot, app, tab)
+                await pilot.pause()
+                box = modal.query_one("#dr-box")
+                self.assertEqual(box.region.height, 30, tab)
+                self.assertLessEqual(box.region.right, 80, tab)
+                presets = modal.query_one("#dr-presets")
+                left = modal.query_one("#dr-left")
+                for _label, wid, _key in TUI.DateRangeModal.PRESETS:
+                    chip = modal.query_one(f"#{wid}", Button)
+                    self.assertEqual(chip.region.height, 3, f"{tab} {wid}")
+                    self.assertLessEqual(chip.region.right,
+                                         left.region.right, f"{tab} {wid}")
+                start = modal.query_one("#dr-start-card")
+                end = modal.query_one("#dr-end-card")
+                self.assertEqual(start.region.y, presets.region.bottom + 1, tab)
+                self.assertEqual(end.region.y, start.region.bottom + 1, tab)
+                follow = modal.query_one("#dr-follow")
+                self.assertGreaterEqual(follow.region.height, 3, tab)
+                for wid in ("#dr-actions", "#dr-cancel", "#dr-ok"):
+                    widget = modal.query_one(wid)
+                    self.assertLessEqual(widget.region.bottom, 30,
+                                         f"{tab} {wid}")
+                await pilot.press("escape")
+                await pilot.pause()
+
+    async def test_a_short_terminal_scrolls_the_picker_instead_of_crushing_it(self):
+        """At 24 rows the 30-row box cannot fit, so the modal screen scrolls by
+        exactly the overflow. That keeps Confirm reachable without shrinking
+        cbut's chrome back to one-row chips and a borderless switch."""
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(80, 24)) as pilot:
             modal = await self._open(pilot, app)
             await pilot.pause()
-            box = modal.query_one("#dr-box")
-            self.assertLessEqual(box.region.right, 80)
-            self.assertLessEqual(box.region.bottom, 45)
+            self.assertEqual(modal.query_one("#dr-box").region.height, 30)
+            self.assertEqual(modal.screen.max_scroll_y, 6)
+            modal.screen.scroll_end(animate=False)
+            await pilot.pause()
+            self.assertEqual(modal.screen.scroll_y, 6)
+            ok = modal.query_one("#dr-ok")
+            self.assertLessEqual(ok.region.bottom - modal.screen.scroll_y, 24)
 
     async def test_confirm_applies_the_picked_window_to_that_tab_only(self):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
@@ -486,7 +546,7 @@ class DateRangeTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(modal.query_one("#dr-follow", Checkbox).value)
 
     async def test_a_blank_start_means_all_time(self):
-        from textual.widgets import Checkbox, Input
+        from textual.widgets import Button, Checkbox, Input
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         results = []
         async with app.run_test(size=(140, 45)) as pilot:
@@ -495,6 +555,9 @@ class DateRangeTest(unittest.IsolatedAsyncioTestCase):
                             results.append)
             await pilot.pause()
             modal = app.screen
+            # The chip names the whole window, not an abbreviation of it.
+            self.assertEqual(str(modal.query_one("#dr-all", Button).label),
+                             "All time")
             await pilot.click("#dr-all")
             await pilot.pause()
             self.assertEqual(modal.query_one("#dr-start-date", Input).value, "")
@@ -618,6 +681,8 @@ class WideTableTest(unittest.IsolatedAsyncioTestCase):
         registered |= set(TUI.HistoryScreen.WIDE_TABLES)
         registered |= set(TUI.PluginScreen.WIDE_TABLES)
         registered |= set(TUI.ModelResponsesScreen.WIDE_TABLES)
+        registered |= set(TUI.ProjectScreen.WIDE_TABLES)
+        registered |= set(TUI.RequestsScreen.WIDE_TABLES)
         self.assertTrue(ids)
         self.assertEqual(ids, registered, "the source and the column plan have"
                          " drifted apart")
@@ -652,7 +717,10 @@ class ResizeTest(unittest.IsolatedAsyncioTestCase):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(64, 24)) as pilot:
             for table_id, (cols, note_id, _chrome) in app.WIDE_TABLES.items():
-                tab = table_id[: -len("-table")]
+                # Tab tables are named `<tab>-table`; the Dashboard's project
+                # board lives on the tab already open at mount.
+                tab = (table_id[: -len("-table")]
+                       if table_id.endswith("-table") else "dashboard")
                 await self._tab(pilot, app, tab)
                 table, labels = await self._labels(app, table_id)
                 with self.subTest(tab=tab):
@@ -1098,6 +1166,164 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
 
 LEAF_SCREENS = frozenset({"PluginScreen", "CallScreen"})
 
+
+class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
+    """Runs → requests → call, and Dashboard → project → session → requests.
+
+    Both ladders are driven through Enter on the row (the gesture a user makes),
+    and both are keyed by values that are not simple entity names: a run is its
+    Agent call id, a session is a UUID, and a project is a path. A screen that
+    received the rendered cell instead of the key would look right and query the
+    wrong thing.
+    """
+
+    async def asyncSetUp(self):
+        self.t = build_db(self)
+
+    def _table(self, app, table_id):
+        return app.screen.query_one(f"#{table_id}")
+
+    async def _open(self, app, pilot, table_id, row=0):
+        table = self._table(app, table_id)
+        table.move_cursor(row=row)
+        await pilot.pause()
+        table.action_select_cursor()
+        await pilot.pause()
+        await pilot.pause()
+
+    async def _tab(self, app, pilot, pane):
+        from textual.widgets import TabbedContent
+        app.query_one(TabbedContent).active = pane
+        await pilot.pause()
+        await pilot.pause()
+
+    def _row_index(self, app, table_id, key):
+        table = self._table(app, table_id)
+        keys = [str(k.value) for k in table.rows]
+        self.assertIn(key, keys, f"{table_id} has no key {key!r}: {keys}")
+        return keys.index(key)
+
+    async def test_the_agents_tab_shows_a_runs_linked_cost(self):
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "agents")
+            row = row_map(self._table(app, "agents-table"), "Explore")
+            self.assertEqual(row["runs"], "1")
+            self.assertEqual(row["requests"], "1")
+            self.assertEqual(row["api tokens"], "33")
+            self.assertEqual(row["credits"], "0.50")
+            self.assertEqual(row["peak ctx"], "42.0%")
+
+    async def test_a_run_row_opens_the_responses_it_launched(self):
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "agents")
+            row = self._row_index(app, "agents-table", "agent\tExplore")
+            await self._open(app, pilot, "agents-table", row=row)
+            hist = app.screen
+            self.assertIsInstance(
+                hist, TUI.HistoryScreen,
+                f"an agent type opened {type(hist).__name__}: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
+            self.assertEqual((hist.kind, hist.entity), ("agent", "Explore"))
+            await self._open(app, pilot, "hist-table")
+            top = app.screen
+            self.assertIsInstance(
+                top, TUI.RequestsScreen,
+                f"a run row opened {type(top).__name__}: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
+            self.assertEqual(top.agent_call_id, "c4")
+            table = self._table(app, "req-table")
+            self.assertEqual(table.row_count, 1)
+            keys = [str(k.value) for k in table.rows]
+            self.assertEqual(keys, ["model\tm6"])
+            head = str(top.query_one("#req-head").content)
+            self.assertIn("1 request", head)
+            self.assertIn("42.0%", head)
+
+    async def test_the_dashboard_project_board_opens_its_session_ledger(self):
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            row = self._row_index(app, "dash-projects", "project\t/work/demo")
+            await self._open(app, pilot, "dash-projects", row=row)
+            top = app.screen
+            self.assertIsInstance(top, TUI.ProjectScreen)
+            self.assertEqual(top.project, "/work/demo")
+            self.assertEqual(top.heading, "/work/demo")
+            sessions = self._table(app, "project-table")
+            self.assertEqual(sessions.row_count, 1)
+            head = str(top.query_one("#project-head").content)
+            self.assertIn("compactions", head)
+            await self._open(app, pilot, "project-table")
+            self.assertIsInstance(app.screen, TUI.RequestsScreen)
+            self.assertEqual(app.screen.session_id, "s1")
+            self.assertEqual(self._table(app, "req-table").row_count, 6)
+
+    async def test_a_null_project_row_opens_the_no_project_group(self):
+        """NULL is a real group and must route to `project IS NULL`, not to a
+        lookup for a project named "" that would open an empty screen."""
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, has_usage)"
+            " VALUES('m-null','s-null',NULL,?, 'qfmodel','builtin', 1, 1, 1)",
+            (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            row = self._row_index(app, "dash-projects",
+                                  f"project\t{TUI.NULL_PROJECT_KEY}")
+            await self._open(app, pilot, "dash-projects", row=row)
+            top = app.screen
+            self.assertIsInstance(top, TUI.ProjectScreen)
+            self.assertIsNone(top.project)
+            self.assertEqual(top.heading, "(no project)")
+            self.assertEqual(self._table(app, "project-table").row_count, 1)
+
+    async def test_the_dashboard_project_counter_matches_the_board(self):
+        """The counter and the board must be the same ledger.
+
+        Tool calls stay in `/work/demo`, so a tool-scoped count would read 1
+        while the board below has the second project's request.
+        """
+        from textual.widgets import Static
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, has_usage) VALUES"
+            " ('m-other','s-other','/work/other',?, 'qfmodel','builtin', 1,1,1)",
+            (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            self.assertEqual(self._table(app, "dash-projects").row_count, 2)
+            counter = str(app.query_one("#dash-rt-projects", Static).content)
+            self.assertIn("Projects", counter)
+            self.assertTrue(counter.rstrip().endswith("2"), counter)
+
+    async def test_the_dashboard_and_tokens_note_surface_the_new_ledgers(self):
+        from textual.widgets import Static
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            compactions = str(app.query_one("#dash-rt-compactions", Static).content)
+            self.assertIn("1", compactions)
+            self.assertIn("800 ctx", compactions)
+            peak = str(app.query_one("#dash-rt-peak", Static).content)
+            self.assertIn("42.0%", peak)
+            await self._tab(app, pilot, "tokens")
+            note = str(app.query_one("#tokens-note", Static).content)
+            self.assertIn("Token capture began", note)
+            self.assertIn("since then 50.0% (3/6)", note)
+
+
 class StatusLineTest(unittest.IsolatedAsyncioTestCase):
     async def test_the_status_line_counts_what_is_indexed(self):
         t = build_db(self)
@@ -1222,17 +1448,16 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         # says the same thing the dashes do.
         self.assertEqual(hosted["Requests"], "2")
         self.assertEqual(hosted["Credits"], "1.75")
-        self.assertEqual(hosted["Coverage"], "0.0% (0/2)")
-        # The route column is the one-word billing family beside the channel.
-        self.assertEqual(hosted["Route"], "Built-in")
-        # Provider is the channel name; Qoder's own route has none, and repeating
-        # `Built-in` here would put one fact in two columns.
-        self.assertEqual(hosted["Provider"], "-")
+        self.assertEqual(hosted["Coverage"], "0.0%")
+        # One Provider column carries the family and the channel; there is no
+        # second Route column repeating `Built-in` beside it.
+        self.assertNotIn("Route", hosted)
+        self.assertEqual(hosted["Provider"], "Built-in")
         byok = await self._tokens_row("byok-model")
         self.assertEqual(byok["Input"], "120")
         self.assertEqual(byok["Output"], "24")
-        self.assertEqual(byok["Coverage"], "100.0% (1/1)")
-        self.assertEqual(byok["Route"], "3P")
+        self.assertEqual(byok["Coverage"], "100.0%")
+        self.assertNotIn("Route", byok)
         self.assertEqual(byok["Provider"], "qoder-custom-a3d301ce")
         # E1, the other axis: that route never carried a `credits` field, so its
         # rollup is absent (`-`), not billed-zero (`0`).
@@ -1247,10 +1472,14 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             table = app.query_one("#usage-table", DataTable)
-            self.assertEqual(row_map(table, "m1")["Input"], "—")
-            self.assertEqual(row_map(table, "m1")["Route"], "Built-in")
-            self.assertEqual(row_map(table, "m3")["Input"], "120")
-            self.assertEqual(row_map(table, "m3")["Route"], "3P")
+            m1 = row_map(table, "m1")
+            self.assertEqual(m1["Input"], "—")
+            self.assertNotIn("Route", m1)
+            self.assertEqual(m1["Provider"], "Built-in")
+            m3 = row_map(table, "m3")
+            self.assertEqual(m3["Input"], "120")
+            self.assertNotIn("Route", m3)
+            self.assertEqual(m3["Provider"], "qoder-custom-a3d301ce")
             # A BYOK response carries no credits field at all: absent, which is
             # `-`, and not the `—` that means "this route counts in credits".
             self.assertEqual(row_map(table, "m3")["Credits"], "-")
@@ -1287,6 +1516,11 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(panel.endswith("120"), panel)
             coverage = str(app.query_one("#dash-tok-coverage", Static).content)
             self.assertTrue(coverage.endswith("33.3%"), coverage)
+            # Top models use the same one-column provider label as the Tokens
+            # tab, so a built-in row is not left unlabelled.
+            models = str(app.query_one("#dash-models", Static).content)
+            self.assertIn("qfmodel · Built-in", models)
+            self.assertIn("byok-model · qoder", models)
             app.query_one(TabbedContent).active = "usage"
             await pilot.pause()
             await pilot.pause()
@@ -1306,12 +1540,27 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             (int(datetime.now().timestamp() * 1000),))
         conn.commit()
         conn.close()
-        row = await self._tokens_row("qfmodel")
-        # Two legacy rows and one measured one: 1 request in 3, not 50% of the
-        # rows and not 50 tokens against a hidden total.
-        self.assertEqual(row["Coverage"], "33.3% (1/3)")
-        self.assertEqual(row["Input"], "50")
-        self.assertEqual(row["Credits"], "1.75")
+        from textual.widgets import DataTable, Static, TabbedContent
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(200, 45)) as pilot:
+            app.query_one(TabbedContent).active = "tokens"
+            await pilot.pause()
+            await pilot.pause()
+            row = row_map(app.query_one("#tokens-table", DataTable), "qfmodel")
+            # Two legacy rows and one measured one: 1 request in 3, not 50% of
+            # the rows and not 50 tokens against a hidden total. The counts
+            # behind the share live on the tab's note, not in a cell that
+            # repeats Requests.
+            self.assertEqual(row["Coverage"], "33.3%")
+            note = str(app.query_one("#tokens-note", Static).content)
+            # The note is the window's aggregate, not this model's: two of four
+            # responses reported a token (the BYOK row plus the inserted one).
+            self.assertIn("50.0% (2/4)", note)
+            self.assertIn("2 credits-only", note)
+            self.assertIn("0 unmeasured", note)
+            self.assertIn("share of requests that reported a token", note)
+            self.assertEqual(row["Input"], "50")
+            self.assertEqual(row["Credits"], "1.75")
 
     async def test_a_credits_only_call_detail_dashes_its_token_rows(self):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
@@ -1331,6 +1580,8 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             # reported measure keeps its parenthesised raw value.
             self.assertNotEqual(detail["credits"], "—")
             self.assertIn("(1.5)", detail["credits"])
+            # The stored sentinel is not a label a reader should see.
+            self.assertEqual(detail["provider"], "Built-in")
             # The per-call member of the three-state partition names what the
             # four dashes above already say.
             self.assertEqual(detail["token coverage"], "credits-only")
@@ -1346,6 +1597,7 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             detail = dict(zip(labels, values))
             self.assertEqual(detail["input tokens"], "120  (120)")
             self.assertEqual(detail["output tokens"], "24  (24)")
+            self.assertEqual(detail["provider"], "qoder-custom-a3d301ce")
             self.assertNotIn("—", detail.values())
             # Its credits field is absent, which is `-`: an absent value and a
             # route-level zero are two different statements.

@@ -13,22 +13,22 @@ date, not a policy — re-measure before restating any of it.
 
 | Interpreter | Suite |
 |---|---|
-| Python 3.11.15 | 310 OK (2026-10-12; CI is the record for the 347-case suite) |
-| Python 3.13.14 (the `install.sh` venv) | 347 OK (2026-10-21) |
-| Python 3.14.4 | 310 OK (2026-10-12; CI is the record for the 347-case suite) |
+| Python 3.11.15 | 310 OK (2026-10-12; CI is the record for the 378-case suite) |
+| Python 3.13.14 (the `install.sh` venv) | 378 OK (2026-10-21) |
+| Python 3.14.4 | 378 OK (2026-10-21) |
 
-The 310-case row is the last local measurement for that interpreter with `textual 8.2.8`; the suite
-has since grown to 347 cases. Re-run before claiming a local green on 3.11 or 3.14. The per-suite
-counts are in [`baseline.md`](baseline.md).
+The 310-case row is the last local measurement for 3.11 with `textual 8.2.8`; the suite has since
+grown to 378 cases. Re-run there before claiming a local green on 3.11. The per-suite counts are
+in [`baseline.md`](baseline.md).
 
-## Qoder CN
+## Qoder CN CLI
 
-- The tool targets the **Qoder CN CLI**. The schema is verified against **the transcripts on this
-  machine**, not against a version number: CLI version `1.1.75` was the one measured (2026-10-21).
-  The same tree still carries desktop `1.1.57` sessions, which is the useful part — the reader
-  handles both shapes. No transcript line carries a version the tool relies on, so the version
-  string is context, not a contract — see [`qoder-format.md`](qoder-format.md) for what is actually
-  read.
+- The tool targets the **Qoder CN CLI**; the IDE/desktop app is out of scope. The schema is
+  verified against **the transcripts on this machine**, not against a version number: CLI version
+  `1.1.75` was the one measured (2026-10-21). The same tree still carries desktop `1.1.57`
+  sessions, which is the useful part — the reader handles both shapes. No transcript line carries
+  a version the tool relies on, so the version string is context, not a contract — see
+  [`qoder-format.md`](qoder-format.md) for what is actually read.
 - **Hosted token capture depends on the CLI's environment.** The CLI writes real input / output /
   cache-read / cache-creation tokens for Qoder-hosted routes only when its own process sees
   `QODERCN_EXPOSE_TOKEN_USAGE=1` (`db.TOKEN_ENV_NAME`). qcut never sets it, never edits a shell
@@ -46,9 +46,11 @@ counts are in [`baseline.md`](baseline.md).
 
 ## SQLite
 
-- The standard library's `sqlite3`; no third-party driver. The index carries schema version `1`
-  (`db.SCHEMA_VERSION`). Coverage is derived at query time, so an index written before the
-  CLI-first upgrade keeps working without a migration.
+- The standard library's `sqlite3`; no third-party driver. The index carries schema version `2`
+  (`db.SCHEMA_VERSION`). v2 is additive — `parent_call_id`, `agent_id` and the `compactions`
+  table — and opening a v1 index migrates it in place, so old rows keep working. Historical rows
+  gain agent linkage and compaction rows only from `qcut sync --full`: the incremental sync skips
+  files whose size and mtime are unchanged. Coverage is derived at query time.
 
 ## Linux
 

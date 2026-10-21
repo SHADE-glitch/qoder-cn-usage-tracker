@@ -14,9 +14,11 @@ Guidance for AI coding agents working in this repository.
 
 ## What this is
 
-A **passive** usage tracker for Qoder CN: it parses the session transcripts Qoder
-already writes and builds a local SQLite index, then shows it in an eight-tab
-Textual TUI (plus a headless `qcut stats` CLI). Three layers, in dependency order:
+A **passive** usage tracker for the **Qoder CN CLI**: it parses the session transcripts
+the CLI already writes and builds a local SQLite index, then shows it in an eight-tab
+Textual TUI (plus a headless `qcut stats` CLI). The IDE/desktop Qoder app is out of
+scope: it does not write this transcript tree, so there is nothing here to index for it.
+Three layers, in dependency order:
 
 1. `scripts/qcut-sync.py` — the parser and indexer. Reads **only**
    `~/.qoder-cn/projects/**/*.jsonl` (plus the small `skills/`, `plugins/`,
@@ -26,6 +28,19 @@ Textual TUI (plus a headless `qcut stats` CLI). Three layers, in dependency orde
 2. `scripts/qcut_db.py` — the shared data layer (schema, queries, calendar-day
    windows, snapshots). Imported by the TUI, the stats CLI and the tests.
 3. `scripts/qcut-tui.py` (Textual) and `scripts/qcut-stats.py` (headless CLI).
+
+**Positioning: this is an imitation of `cbut`, not a port of it.** `cbut`
+(`codebuddy-usage-tracker`) is the sibling tracker for CodeBuddy Code and the model this
+project deliberately copies; `tcut` is the third sibling. What is copied is the family
+shape — a passive reader over files the host already writes, the same eight tab slots in
+the same order, per-tab calendar-day windows, name-keyed unions, two-level drill-downs.
+What is **not** copied is any category Qoder CN CLI does not record: per-request duration,
+HTTP status and money have no Qoder field, so they stay absent and the note says why.
+The Qoder-specific additions — credits beside tokens, the three-state token coverage,
+`Usage Total` beside `API Total`, cache read / miss / write — are this project's own and
+are first-class, not deviations to be sanded off for parity. When the two disagree, the
+source of truth is what Qoder's transcripts contain, never cbut's screen. The READMEs
+carry the user-facing version under "Relationship to cbut".
 
 **There are two writers, not one.** `qcut sync` is the only thing that indexes
 transcripts, but the TUI also writes: `on_mount` runs `db.ensure_schema()` and
@@ -41,7 +56,8 @@ reason.
 
 **The eight tab slots are shared with the sibling trackers, not owned by this repository.**
 `Dashboard · Tools · Skills · Agents · Plugins · MCP · Tokens · Usage` is the same list, in the
-same order, as `cbut`'s and `tcut`'s — only the data behind a slot differs. That is the point:
+same order, as `cbut`'s (the model this project imitates) and `tcut`'s — only the data behind
+a slot differs. That is the point:
 a reader switching between the three tools finds the same shape and learns which product writes
 what. It also means a slot must be filled with **what this product's files actually contain** and
 must **name what it does not contain** — never a placeholder that reads as `0`, and never a deleted
@@ -177,6 +193,10 @@ tool runs from a checkout, so the version only needs to move when a documented c
   file attribution, so a re-read adds a file's earlier bad lines a second time.
   `qcut sync --full` clears and re-derives it, which is the only way to correct it —
   read `unparsed` as "at least this many", never as an exact count.
+  **Schema v2 backfills only on `--full`.** Its agent links (`parent_call_id`,
+  `agent_id`) and `compactions` rows come from records an incremental run has no
+  reason to revisit; existing rows stay NULL/empty until a full pass. That is why
+  the upgrade note in both READMEs asks for one `qcut sync --full`.
 - **Route origin is read, never guessed.** `provider` comes from the model string
   (`qoder-custom-<id>/<model>`) plus the configured `baseUrl` host. It is never
   inferred from the model *name*: a BYOK alias can look built-in (`qcfmodel`
@@ -190,6 +210,22 @@ tool runs from a checkout, so the version only needs to move when a documented c
   derive tokens from credits or `context_usage_ratio`, and do not derive credits
   from tokens. Zeros already in the transcripts are history and cannot be repaired
   by qcut — the only lever is the CLI's own environment at call time.
+- **A run's cost is joined, never inferred.** A sidechain response belongs to a run
+  only when its own record carries `parent_tool_use_id`; `agentId` is stored as the
+  companion identifier. Never match a run to responses by timestamp, agent type or
+  file adjacency. A run with no linked response keeps `requests = 0` and `-` token
+  cells; `test_a_main_chain_response_has_no_invented_run_link` and
+  `test_a_sidechain_response_keeps_its_launching_run_link` hold both directions.
+- **Compaction is metadata only.** Read `compact_boundary.compactMetadata` (trigger,
+  pre/post tokens, summarized count, duration) and never the summarized messages,
+  which are prose. `compacted_tokens = max(pre - post, 0)` is a display measure of
+  context dropped; it is shown **beside** token totals and never added to them. A
+  duplicate boundary is `INSERT OR IGNORE`d, and missing metadata is not fabricated.
+- **The capture split is a fact about the index, not the window.** `q_capture_timeline`
+  takes its split timestamp from the first token-covered request across the whole
+  index; the window filters the counts on each side, never the timestamp. Otherwise a
+  quiet window would claim capture began inside it. `qcut stats`, `qcut env`, the
+  Tokens note and the Dashboard all read this one function.
 - **Every request is in exactly one coverage state.** `token-covered` = at least
   one token field > 0; `credits-only` = no token > 0 and `credits IS NOT NULL`;
   `unmeasured` = no token > 0 and `credits IS NULL`. They partition the requests:
@@ -243,10 +279,13 @@ tool runs from a checkout, so the version only needs to move when a documented c
   carried (a BYOK route carries no `credits` field at all, so it is stored NULL, not
   0), and `Usage` is per-response only where a response was recorded; its `—` means
   that call reported no token, and its note says credits and tokens can coexist and
-  points at `qcut env`. Both tables carry a one-word `Route` (`Built-in` / `3P`)
-  beside `Provider`, derived from the same stored value so the family and the channel
-  cannot disagree. The caveat is part of the contract; delete it and the panel starts
-  lying.
+  points at `qcut env`. Both tables carry **one** `Provider` column: `Built-in` for
+  Qoder's own route, otherwise the stored BYOK channel name. A second one-word `Route`
+  column is gone — it repeated the family and cost the width that made the table drop
+  its tail on a normal terminal. The Tokens `Coverage` cell is a bare share; its note
+  line carries the definition and the window's `token-covered / credits-only /
+  unmeasured` counts, so a partial token sum still cannot read as a total. The caveat
+  is part of the contract; delete it and the panel starts lying.
   The *set* is machine-checked too, and against literals rather than against
   `TABS`: `scripts/qcut-tui.py` builds its panes in a loop over that tuple, so
   comparing the built panes back to it holds for any tab set at all — including
@@ -286,17 +325,28 @@ tool runs from a checkout, so the version only needs to move when a documented c
 
 ## Conventions
 
-- **This UI is a look-alike, and the chrome is part of the claim.** Tab titles are
-  plain words (`Dashboard`, `MCP`) with no emoji, and the app defines no canvas or
-  status-bar `background` of its own — both are Textual defaults, as in the tool
-  this one mirrors. The emoji that *do* appear in the READMEs sit in the feature
-  bullets and the first column of the tab table; they document the tabs, they are
-  not the tab labels. `test_tui.py::ChromeTest` pins the two shape facts.
+- **This UI is a look-alike of cbut, and the chrome is part of the claim.** Tab titles
+  are plain words (`Dashboard`, `MCP`) with no emoji, and the app defines no canvas or
+  status-bar `background` of its own — both are Textual defaults, as in the tool this
+  one mirrors. The emoji that *do* appear in the READMEs sit in the feature bullets and
+  the first column of the tab table; they document the tabs, they are not the tab
+  labels. `test_tui.py::ChromeTest` pins the two shape facts.
+- **The custom-range picker is cbut's picker, geometry included.** Height-3 shortcut
+  chips, a blank row between the preset row and the start card, another between the two
+  cards, and the default bordered "follows now" switch. It carries **cbut's six chips**
+  — `Today`, `1d`, `7d`, `14d`, `30d`, `All time` — not one chip per Select option:
+  the Select's 2 days / 3 days are shortcuts the calendar can still express, while a
+  seventh height-3 chip needs 60 cells in a 53-cell column and clips `All time`.
+  The box measures 79x30 and is shared by every windowed tab; Plugins hides the control
+  because its window is all-time. At 80x30 it fits exactly, and on a shorter terminal
+  the modal screen scrolls by the overflow instead of crushing the chrome. Both facts
+  are measured in `test_tui.py::DateRangeTest::test_the_picker_keeps_cbuts_roomy_layout`
+  and `test_a_short_terminal_scrolls_the_picker_instead_of_crushing_it`.
 - **A flag is registered only where a command reads it.** `--limit` belongs to the
-  seven reports that pass it to a query (`tools`, `skills`, `agents`, `mcp`,
-  `commands`, `recent`, `show`), and `--range` only to `show`, which is the one
-  command with a window argument. A flag the parser accepts and the report ignores
-  reads as a filter that worked.
+  eight reports that pass it to a query (`tools`, `skills`, `agents`, `mcp`,
+  `projects`, `commands`, `recent`, `show`), and `--range` only to `show` and
+  `projects`, the two commands with a window argument. A flag the parser accepts
+  and the report ignores reads as a filter that worked.
 - **Settings are read once, in one place.** `db.load_config()` resolves
   environment > file > `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`,
   one in `ENV_NAMES`, one in `_BOUNDS`, and one assignment where the value is

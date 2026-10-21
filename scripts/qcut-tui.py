@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""qcut-tui — the eight-tab Textual UI for the Qoder CN usage tracker.
+"""qcut-tui — the eight-tab Textual UI for the Qoder CN CLI usage tracker.
 
     python3 scripts/qcut-tui.py
 
@@ -12,7 +12,7 @@ Each tab keeps its own window; the Plugins tab has none (an install fact is
 always all-time). The window comes from the shared top bar: a range ``Select``
 with a ``Custom…`` entry, beside a 📅 control that opens the date-range picker.
 Every number is an integer, a formatted value, ``-`` (no measurement contributed
-to this window) or ``—`` (the route reports credits instead of tokens) — never a
+to this window) or ``—`` (the call reported credits instead of a token) — never a
 guess.
 
 Two deliberate absences, both because Qoder's transcripts carry no such field:
@@ -229,43 +229,46 @@ DEFAULT_RANGES = {
 }
 
 
-def provider_cell(value):
-    """The Provider column: the channel name for 3P, `-` for Qoder's own route.
-
-    `Route` already says `Built-in`; repeating it under Provider put one fact in
-    two adjacent columns. Keeping Provider for the channel name makes the pair
-    read as family + name instead of the same value twice.
-    """
-    if value == "builtin":
-        return "-"
-    return db.provider_label(value)
-
-
 # Column sets. The Usage page is cc-switch's request list with Qoder's fields:
-# time · model · provider · route · usage total · input · output · API total ·
-# cache hit/miss/write · credits · hit rate. Cache *miss* is derived (the input
-# that was not read from cache) and the page note says so; there is no duration
-# or HTTP-status column because the transcripts carry neither. `Route` is the
-# one-word billing family (Built-in / 3P); `Provider` keeps the channel name.
-USAGE_COLUMNS = ("Time", "Model", "Provider", "Route", "Credits", "Usage Total",
+# time · model · provider · usage total · input · output · API total · cache
+# hit/miss/write · credits · hit rate. Cache *miss* is derived (the input that
+# was not read from cache) and the page note says so; there is no duration or
+# HTTP-status column because the transcripts carry neither. `Provider` is one
+# column, not a family plus a name: built-in models read `Built-in`, and a BYOK
+# call reads the channel that served it.
+USAGE_COLUMNS = ("Time", "Model", "Provider", "Credits", "Usage Total",
                  "Input", "Output", "API Total", "Cache hit", "Cache miss",
                  "Cache write", "Hit rate")
 # Tokens tab: the per-model rollup, same measure family. `Coverage` sits right
 # after `Requests` because on this machine it is the column that stops a partial
 # token sum from reading as a total: most legacy hosted calls reported no token,
-# so a model can show real tokens for a small share of its requests. One
-# expression (`db._TOKEN_COVERED_EXPR`) feeds the column and the `—` in the token
-# cells, so the two cannot disagree.
-TOKENS_COLUMNS = ("Model", "Provider", "Route", "Credits", "Requests", "Coverage",
+# so a model can show real tokens for a small share of its requests. It is a
+# bare share here — the counts live on the tab's note line — because the old
+# `0.2% (71/40,544)` cell repeated `Requests` and cost the width of a data
+# column. One expression (`db._TOKEN_COVERED_EXPR`) feeds the column and the `—`
+# in the token cells, so the two cannot disagree.
+TOKENS_COLUMNS = ("Model", "Provider", "Credits", "Requests", "Coverage",
                   "Usage Total", "Input", "Output", "API Total", "Cache hit",
                   "Cache miss", "Cache write", "Hit rate")
 
 TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "pending", "avg", "last used")
 SKILLS_COLUMNS = ("skill", "calls", "ok", "plugin", "last used")
-AGENTS_COLUMNS = ("agent type", "calls", "ok", "last used")
+# A run is one `Agent` tool call. `requests`/tokens/credits are the responses
+# that run's own `parent_tool_use_id` links to it; a run whose sidechain file was
+# never indexed keeps 0 requests and no token sum rather than a guess.
+AGENTS_COLUMNS = ("agent type", "runs", "ok", "requests", "api tokens",
+                  "credits", "peak ctx", "last used")
 PLUGINS_COLUMNS = ("plugin", "version", "uses", "skills", "agents", "cmds",
                    "last used")
 MCP_COLUMNS = ("server", "tool", "calls", "ok", "avg", "last used")
+PROJECT_COLUMNS = ("project", "sessions", "requests", "credits", "api tokens",
+                   "coverage", "compactions", "last used")
+PROJECT_SESSION_COLUMNS = ("session", "last used", "requests", "credits",
+                           "api tokens", "coverage", "peak ctx", "compactions",
+                           "compacted", "model")
+SESSION_CALL_COLUMNS = ("when", "model", "provider", "agent", "credits",
+                        "input", "output", "api total", "cache hit",
+                        "cache write", "context", "sidechain")
 
 # A drill-down mirrors the table it came from. `model` keeps the whole measure
 # family so the history screen agrees with the Tokens tab it was opened from.
@@ -273,15 +276,17 @@ HISTORY_COLUMNS = {
     "tool": ("when", "tool", "category", "status", "duration", "project",
              "session"),
     "skill": ("when", "skill", "status", "duration", "project", "session"),
-    "agent": ("when", "agent type", "status", "duration", "project", "session"),
-    "model": ("when", "model", "provider", "route", "credits", "input",
+    "agent": ("when", "agent type", "status", "duration", "requests", "input",
+              "output", "api total", "cache hit", "cache write", "credits",
+              "peak ctx", "project", "session"),
+    "model": ("when", "model", "provider", "credits", "input",
               "output", "api total", "cache hit", "cache miss", "cache write",
               "stop"),
     "mcp": ("when", "server", "tool", "status", "duration", "session"),
 }
 # Twelve columns need ~180 cells: on an 80-wide terminal most of this table used
 # to sit past the right edge with no key that would bring it back.
-RESPONSE_COLUMNS = ("when", "model", "provider", "route", "credits", "input",
+RESPONSE_COLUMNS = ("when", "model", "provider", "credits", "input",
                     "output", "api total", "cache hit", "cache miss",
                     "cache write", "usage total", "hit rate", "message id")
 # A plugin's own breakdown: attributed calls and installed resources.
@@ -346,6 +351,8 @@ def _call_detail_rows(row):
             text = f"{fmt_credits(value)}  ({value})"
         elif col in _DETAIL_PCT_COLS:
             text = pct(value)
+        elif col == "provider":
+            text = db.provider_label(value)
         elif col in _DETAIL_TOKEN_COLS:
             # The parenthesised raw value stays visible for a reported measure,
             # but a structural zero has no number to show: `—` alone.
@@ -362,14 +369,24 @@ def _call_detail_rows(row):
     return out
 
 
+# A NULL project is a real group on the Dashboard — `(no project)` — and it must
+# route to `project IS NULL`, not to a search for a project literally named "".
+# A NUL byte cannot occur in a cwd.
+NULL_PROJECT_KEY = "\x00"
+
 EMPTY_MSG = {
     "tools": "no tool calls in this window",
     "skills": "no skill invocations in this window",
-    "agents": "no subagent calls in this window",
+    "agents": "no agent runs in this window",
     "plugins": "no plugins installed or used",
     "mcp": "no MCP servers configured or used",
     "tokens": "no model responses in this window",
     "usage": "No requests in this window — widen the range above.",
+    "projects": "no project requests in this window",
+    "project_sessions": "no sessions in this project and window",
+    "agent_requests": "this run has no indexed requests (its sidechain transcript"
+                      " may be absent)",
+    "session_calls": "no requests in this session and window",
 }
 
 
@@ -474,9 +491,9 @@ class TimeInput(Input):
 
 
 class DateRangeModal(ModalScreen):
-    """The custom date-range picker: preset chips, two cards, two grids.
+    """The custom date-range picker, laid out like cbut's: chips, cards, grids.
 
-    Left column: the shortcut chips, an editable START TIME and END TIME (a
+    Left column: cbut's six shortcut chips, an editable START TIME and END TIME (a
     date plus a 24-hour time each), a quick-time row under each card, a
     nudge-step selector and the "end follows now" switch. Right column: a month
     calendar whose ‹ › step the month (and, at the year's ends, the year), with
@@ -492,19 +509,19 @@ class DateRangeModal(ModalScreen):
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
     CELLS = 42                       # 6 rows × 7 columns covers any month
     DOW = ("S", "M", "T", "W", "T", "F", "S")
-    # (chip label, widget id, preset key). "Today" is the human name for the
-    # single whole calendar day the model calls "1d"; the rest are terse because
-    # all seven chips have to sit on one row inside the width budget below.
-    # Every preset the tabs can take is here, so anything reachable from the
-    # Select is reachable from the picker too.
+    # (chip label, widget id, preset key) — cbut's six shortcuts, unchanged.
+    # "Today" and "1d" both name the single whole calendar day the model calls
+    # "1d". The Select also offers 2 days and 3 days, but cbut's picker does not
+    # repeat every Select option as a chip: six height-3 chips take 52 of the
+    # 53-cell column, and a seventh would clip "All time". Those two ranges stay
+    # one click away in the Select and reachable here through the calendar.
     PRESETS = (
-        ("Today", "dr-1d", "1d"),
-        ("2d", "dr-2d", "2d"),
-        ("3d", "dr-3d", "3d"),
+        ("Today", "dr-today", "1d"),
+        ("1d", "dr-1d", "1d"),
         ("7d", "dr-7d", "7d"),
         ("14d", "dr-14d", "14d"),
         ("30d", "dr-30d", "30d"),
-        ("All", "dr-all", "all"),
+        ("All time", "dr-all", "all"),
     )
     # The quick-time row under each card. The start card offers the day's edges
     # and the common halves; the end card also offers ``now``, which is the same
@@ -519,13 +536,14 @@ class DateRangeModal(ModalScreen):
 
     DEFAULT_CSS = """
     DateRangeModal { align: center middle; overflow: auto; }
-    /* Width budget, so the whole picker fits an 80-column terminal:
-       1 border + 1 padding + 53 (left column, of which the seven preset chips
-       need 41) + 1 margin + 21 (7 day cells of 3, and 6 hour cells of 3) +
-       1 padding + 1 border = 79. The day and hour cells are Statics, not
-       Buttons: a Button renders a two-digit label as one digit at width 3.
-       Measured, not derived: #dr-box.region.right is asserted <= 80 at an
-       80-wide terminal. */
+    /* The roomy cbut layout: height-3 preset chips, a blank row between the
+       cards, and the default bordered checkbox. Width budget, so the picker
+       fits an 80-column terminal: 1 border + 1 padding + 53 (left column, of
+       which cbut's six preset chips use 52) + 1 margin + 21 (7 day cells of 3,
+       and 6 hour cells of 3) + 1 padding + 1 border = 79. The day and hour
+       cells are Statics, not Buttons: a Button renders a two-digit label as one
+       digit at width 3. On a shorter terminal the screen scrolls rather than
+       crushing the layout; the tests assert the roomy geometry at 80x30. */
     #dr-box { width: auto; height: auto; border: round $primary;
               background: $surface; padding: 1 1; }
     #dr-left { width: 53; height: auto; }
@@ -559,6 +577,9 @@ class DateRangeModal(ModalScreen):
        `Button:ansi.-style-default` selector outranks a bare class, so
        `.dr-day { border: none }` would silently lose and the calendar would
        render with tall borders and no room for the number. */
+    /* cbut's preset chips: three rows tall, a cell of padding each side, and a
+       cell of air between them. The six chips use 52 of the 53-cell column, so
+       "All time" keeps its full label. */
     #dr-presets Button { width: auto; min-width: 0; height: 3; border: none;
                          padding: 0 1; margin: 0 1 0 0; background: $boost;
                          color: $foreground; }
@@ -1150,6 +1171,19 @@ class HistoryScreen(WideTableMixin, Screen):
                 table_rows.append([ts(r["ts"]), r["name"] or "-", r["tool"] or "-",
                                    status, ms(r["duration_ms"]),
                                    r["session_id"] or "-"])
+            elif self.kind == "agent":
+                rep = bool(r["token_covered"])
+                table_rows.append([
+                    ts(r["ts"]), r["name"], status, ms(r["duration_ms"]),
+                    fmt_n(r["requests"]),
+                    fmt_tok(r["input_tokens"], rep),
+                    fmt_tok(r["output_tokens"], rep),
+                    fmt_tok(self._api_total(r), rep),
+                    fmt_tok(r["cache_read_tokens"], rep),
+                    fmt_tok(r["cache_creation_tokens"], rep),
+                    fmt_credit_total(r["credits"], r["credits_carried"]),
+                    pct(r["peak_context"]),
+                    r["project"] or "-", r["session_id"] or "-"])
             else:
                 table_rows.append([ts(r["ts"]), r["name"], status,
                                    ms(r["duration_ms"]), r["project"] or "-",
@@ -1174,7 +1208,10 @@ class HistoryScreen(WideTableMixin, Screen):
             return ms(value)
         if key == "token_coverage":
             return pct(value)
-        if key in ("token_covered", "credits_only", "unmeasured"):
+        if key == "peak_context":
+            return pct(value)
+        if key in ("token_covered", "credits_only", "unmeasured", "compactions",
+                   "compacted_tokens", "requests", "runs"):
             return fmt_n(value)
         if summary is not None and key in _DETAIL_TOKEN_COLS:
             # A tool/skill summary carries no token fields at all, so the flag
@@ -1190,13 +1227,19 @@ class HistoryScreen(WideTableMixin, Screen):
     @staticmethod
     def _model_row(r):
         rep = db.row_reports_tokens(r)
-        return [ts(r["ts"]), r["model"], provider_cell(r["provider"]),
-                db.route_label(r["provider"]), fmt_credits(r["credits"]),
+        return [ts(r["ts"]), r["model"], db.provider_label(r["provider"]),
+                fmt_credits(r["credits"]),
                 fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
                 fmt_tok(r["total_tokens"], rep), fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
                 r["stop_reason"] or "-"]
+
+    @staticmethod
+    def _api_total(r):
+        if r["input_tokens"] is None or r["output_tokens"] is None:
+            return None
+        return r["input_tokens"] + r["output_tokens"]
 
     def on_data_table_row_selected(self, event) -> None:
         if event.data_table.id != "hist-table":
@@ -1205,9 +1248,192 @@ class HistoryScreen(WideTableMixin, Screen):
             index = self.query_one("#hist-table", DataTable).cursor_row
         except Exception:
             return
-        if 0 <= index < len(self._call_ids):
+        if not 0 <= index < len(self._call_ids):
+            return
+        if self.kind == "agent":
+            # A run is not a request: Enter opens the responses it launched, not
+            # the Agent tool call's own two stored fields.
+            self.app.push_screen(RequestsScreen(
+                self.heading, agent_call_id=self._call_ids[index],
+                agent_type=self.entity, start_ts=self.start_ts,
+                end_ts=self.end_ts, window_label=self.window_label))
+            return
+        self.app.push_screen(
+            CallScreen(self.kind, self._call_ids[index], self.heading))
+
+
+class ProjectScreen(WideTableMixin, Screen):
+    """One project's sessions, with cost and context pressure per session."""
+
+    BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+    WIDE_TABLES = {"project-table": (PROJECT_SESSION_COLUMNS,
+                                     "colnote-project", 1)}
+
+    def __init__(self, project, start_ts=None, end_ts=None,
+                 window_label="all time"):
+        super().__init__()
+        self.project = project
+        self.heading = project or "(no project)"
+        self.start_ts = start_ts
+        self.end_ts = end_ts
+        self.window_label = window_label
+        self._wide_rows = {}
+        self._session_ids = []
+
+    @property
+    def name_cap(self):
+        return self.app.name_cap
+
+    def compose(self) -> ComposeResult:
+        yield TopBar(f"project: {self.heading}")
+        yield Static(id="project-head")
+        yield Static("", id="colnote-project", classes="colnote")
+        yield DataTable(id="project-table", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = f"project: {self.heading}"
+        for tid, (cols, _note, _chrome) in self.WIDE_TABLES.items():
+            table = self.query_one(f"#{tid}", DataTable)
+            table.cursor_type = "row"
+            table.add_columns(*cols)
+        self._reload()
+
+    def _reload(self) -> None:
+        conn = self.app.conn
+        summary = db.q_project_summary(conn, self.project,
+                                       self.start_ts, self.end_ts)
+        lines = [f"[b]project: {self.heading}[/b]  ·  window: {self.window_label}"]
+        if summary is not None:
+            lines.append("  " + "   ".join(
+                f"{key} = {HistoryScreen._summary_value(key, summary[key], summary)}"
+                for key in summary.keys()))
+        self.query_one("#project-head", Static).update("\n".join(lines))
+        rows = db.q_project_sessions(conn, self.project, self.start_ts,
+                                     self.end_ts)
+        out = []
+        self._session_ids = []
+        for r in rows:
+            rep = bool(r["token_covered"])
+            api = (None if r["input_tokens"] is None
+                   or r["output_tokens"] is None
+                   else r["input_tokens"] + r["output_tokens"])
+            out.append([
+                r["session_id"] or "-", ts(r["last_used"]),
+                fmt_n(r["requests"]),
+                fmt_credit_total(r["credits"], r["credits_carried"]),
+                fmt_tok(api, rep),
+                pct(db.token_coverage(r["token_covered"], r["requests"])),
+                pct(r["peak_context"]),
+                fmt_n(r["compactions"]),
+                fmt_n(r["compacted_tokens"]),
+                r["model"] or "-"])
+            self._session_ids.append(r["session_id"])
+        self._fill_wide("project-table", out, EMPTY_MSG["project_sessions"],
+                        key_index=0, key_kind="session",
+                        key_rows=[[sid] for sid in self._session_ids])
+
+    def on_data_table_row_selected(self, event) -> None:
+        if event.data_table.id != "project-table":
+            return
+        try:
+            index = self.query_one("#project-table", DataTable).cursor_row
+        except Exception:
+            return
+        if 0 <= index < len(self._session_ids):
+            self.app.push_screen(RequestsScreen(
+                self._session_ids[index], session_id=self._session_ids[index],
+                start_ts=self.start_ts, end_ts=self.end_ts,
+                window_label=self.window_label))
+
+
+class RequestsScreen(WideTableMixin, Screen):
+    """The responses of one session or one Agent run, oldest first."""
+
+    BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+    WIDE_TABLES = {"req-table": (SESSION_CALL_COLUMNS, "colnote-req", 1)}
+
+    def __init__(self, heading, session_id=None, agent_call_id=None,
+                 agent_type=None, start_ts=None, end_ts=None,
+                 window_label="all time"):
+        super().__init__()
+        self.heading = heading or "(unnamed)"
+        self.session_id = session_id
+        self.agent_call_id = agent_call_id
+        self.agent_type = agent_type
+        self.start_ts = start_ts
+        self.end_ts = end_ts
+        self.window_label = window_label
+        self._wide_rows = {}
+        self._message_ids = []
+
+    @property
+    def name_cap(self):
+        return self.app.name_cap
+
+    def compose(self) -> ComposeResult:
+        yield TopBar(f"requests: {self.heading}")
+        yield Static(id="req-head")
+        yield Static("", id="colnote-req", classes="colnote")
+        yield DataTable(id="req-table", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = f"requests: {self.heading}"
+        for tid, (cols, _note, _chrome) in self.WIDE_TABLES.items():
+            table = self.query_one(f"#{tid}", DataTable)
+            table.cursor_type = "row"
+            table.add_columns(*cols)
+        conn = self.app.conn
+        if self.session_id is not None:
+            rows = db.q_session_calls(conn, self.session_id, self.start_ts,
+                                      self.end_ts,
+                                      limit=self.app.cfg["detail_limit"])
+        else:
+            rows = db.q_agent_run_calls(conn, self.agent_call_id,
+                                        limit=self.app.cfg["detail_limit"])
+        covered = sum(1 for r in rows if db.row_reports_tokens(r))
+        credits = [r["credits"] for r in rows if r["credits"] is not None]
+        peak = max((r["context_usage_ratio"] for r in rows
+                    if r["context_usage_ratio"] is not None), default=None)
+        head = [f"[b]requests: {self.heading}[/b]  ·  window: {self.window_label}",
+                f"  {count_n(len(rows), 'request')} · {fmt_n(covered)} token-covered"
+                f" · credits {fmt_credits(sum(credits) if credits else None)}"
+                f" · peak context {pct(peak)}"]
+        self.query_one("#req-head", Static).update("\n".join(head))
+        out = []
+        self._message_ids = []
+        for r in rows:
+            rep = db.row_reports_tokens(r)
+            agent = (self.agent_type or "agent") if self.agent_call_id else (
+                r["agent_type"] or "main")
+            out.append([
+                ts(r["ts"]), r["model"], db.provider_label(r["provider"]),
+                agent, fmt_credits(r["credits"]),
+                fmt_tok(r["input_tokens"], rep),
+                fmt_tok(r["output_tokens"], rep),
+                fmt_tok(r["total_tokens"], rep),
+                fmt_tok(r["cache_read_tokens"], rep),
+                fmt_tok(r["cache_creation_tokens"], rep),
+                pct(r["context_usage_ratio"]),
+                "yes" if r["is_sidechain"] else "no"])
+            self._message_ids.append(r["call_id"])
+        self._fill_wide("req-table", out, EMPTY_MSG[
+                            "agent_requests" if self.agent_call_id
+                            else "session_calls"],
+                        key_index=0, key_kind="model",
+                        key_rows=[[mid] for mid in self._message_ids])
+
+    def on_data_table_row_selected(self, event) -> None:
+        if event.data_table.id != "req-table":
+            return
+        try:
+            index = self.query_one("#req-table", DataTable).cursor_row
+        except Exception:
+            return
+        if 0 <= index < len(self._message_ids):
             self.app.push_screen(
-                CallScreen(self.kind, self._call_ids[index], self.heading))
+                CallScreen("model", self._message_ids[index], self.heading))
 
 
 class ModelResponsesScreen(WideTableMixin, Screen):
@@ -1268,8 +1494,7 @@ class ModelResponsesScreen(WideTableMixin, Screen):
         for r in rows:
             rep = db.row_reports_tokens(r)
             out.append([ts(r["ts"]), r["model"],
-                        provider_cell(r["provider"]),
-                        db.route_label(r["provider"]),
+                        db.provider_label(r["provider"]),
                         fmt_credits(r["credits"]),
                         fmt_tok(r["input_tokens"], rep),
                         fmt_tok(r["output_tokens"], rep),
@@ -1399,7 +1624,7 @@ class CallScreen(WideTableMixin, Screen):
 
 
 class TrackerApp(WideTableMixin, App):
-    """The eight-tab Qoder CN usage UI."""
+    """The eight-tab Qoder CN CLI usage UI."""
 
     CSS = """
     #topbar { dock: top; }
@@ -1425,7 +1650,7 @@ class TrackerApp(WideTableMixin, App):
     #panel-dash-activity { margin: 0; }
     .panel-title { text-style: bold; color: $accent; }
     #usage-status, #usage-window { padding: 0; }
-    #usage-note, #dash-note, #hist-head, #resp-head, #plugin-head {
+    #usage-note, #dash-note, #tokens-note, #hist-head, #resp-head, #plugin-head {
         padding: 0 1; color: $text-muted; height: auto; }
     #dash-activity { color: $accent; }
     #dash-activity-axis { color: $text-muted; }
@@ -1442,6 +1667,8 @@ class TrackerApp(WideTableMixin, App):
     .summary-panels.compact .usage-panel,
     .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
     .dash-row { height: auto; margin: 0 0 1 0; }
+    #panel-dash-projects { height: auto; }
+    #dash-projects { height: 9; }
     /* The drill-down detail: fixed label column, wrapping value column. */
     #call-body { height: 1fr; overflow-y: auto; padding: 0 1; }
     .call-label { width: 18; color: $text-muted; }
@@ -1456,7 +1683,7 @@ class TrackerApp(WideTableMixin, App):
         Binding("tab", "next_tab", "Next tab", priority=True),
         Binding("shift+tab", "previous_tab", "Prev tab", priority=True),
     ]
-    TITLE = "qcut — Qoder CN usage"
+    TITLE = "qcut — Qoder CN CLI usage"
     # No built-in Header means no ctrl+p palette; disable it outright too.
     ENABLE_COMMAND_PALETTE = False
 
@@ -1490,6 +1717,7 @@ class TrackerApp(WideTableMixin, App):
         "mcp-table": (MCP_COLUMNS, "colnote-mcp", 2),
         "tokens-table": (TOKENS_COLUMNS, "colnote-tokens", 2),
         "usage-table": (USAGE_COLUMNS, "colnote-usage", 4),
+        "dash-projects": (PROJECT_COLUMNS, "colnote-projects", 6),
     }
 
     def __init__(self, db_path=None, clock=None, cfg=None):
@@ -1545,6 +1773,7 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="dash-tok-api"),
                                     Static(id="dash-tok-usage"),
                                     Static(id="dash-tok-hit-rate"),
+                                    Static(id="dash-tok-since"),
                                     classes="usage-panel", id="panel-dash-tokens",
                                 ),
                                 Vertical(
@@ -1577,6 +1806,8 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="dash-rt-avg"),
                                     Static(id="dash-rt-sessions"),
                                     Static(id="dash-rt-projects"),
+                                    Static(id="dash-rt-peak"),
+                                    Static(id="dash-rt-compactions"),
                                     classes="usage-panel", id="panel-dash-runtime",
                                 ),
                                 Vertical(
@@ -1587,6 +1818,18 @@ class TrackerApp(WideTableMixin, App):
                                     id="panel-dash-activity",
                                 ),
                                 classes="dash-row", id="dash-row-3",
+                            ),
+                            Horizontal(
+                                Vertical(
+                                    Static("Projects", classes="panel-title"),
+                                    Static("", id="colnote-projects",
+                                           classes="colnote"),
+                                    DataTable(id="dash-projects",
+                                              zebra_stripes=True),
+                                    classes="usage-panel",
+                                    id="panel-dash-projects",
+                                ),
+                                classes="dash-row", id="dash-row-4",
                             ),
                             Static(id="dash-note"),
                             id="dash-box",
@@ -1633,6 +1876,13 @@ class TrackerApp(WideTableMixin, App):
                             DataTable(id="usage-table", zebra_stripes=True),
                             id="usage-box",
                         )
+                    elif tid == "tokens":
+                        # The column is one share per model; the definition and
+                        # the three-state window counts belong on one line above
+                        # it, where they cannot be mistaken for a column.
+                        yield Static("", id="tokens-note")
+                        yield Static("", id="colnote-tokens", classes="colnote")
+                        yield DataTable(id="tokens-table", zebra_stripes=True)
                     else:
                         yield Static("", id=f"colnote-{tid}", classes="colnote")
                         yield DataTable(id=f"{tid}-table", zebra_stripes=True)
@@ -1891,6 +2141,8 @@ class TrackerApp(WideTableMixin, App):
         self._put_panel("#dash-tok-hit-rate", "Hit rate",
                         self._hit_rate(summary["cache_hit"], summary["cache_miss"],
                                        summary["cache_write"]))
+        self._put_panel("#dash-tok-since", "Since capture",
+                        pct(kpi["capture_since_coverage"]))
 
         self._put_panel("#dash-cache-hit", "Cache hit",
                         fmt_tok(summary["cache_hit"], tok_rep))
@@ -1905,9 +2157,14 @@ class TrackerApp(WideTableMixin, App):
                         f"{act['incomplete'] or 0:,}")
         self._put_panel("#dash-rt-avg", "Avg tool time", ms(act["avg_ms"]))
         self._put_panel("#dash-rt-sessions", "Sessions",
-                        f"{act['sessions'] or 0:,}")
+                        f"{kpi['model_sessions'] or 0:,}")
         self._put_panel("#dash-rt-projects", "Projects",
-                        f"{act['projects'] or 0:,}")
+                        f"{kpi['model_projects'] or 0:,}")
+        self._put_panel("#dash-rt-peak", "Peak context",
+                        pct(kpi["peak_context"]))
+        self._put_panel("#dash-rt-compactions", "Compactions",
+                        f"{kpi['compactions']:,} · "
+                        f"{fmt_n(kpi['compacted_tokens'])} ctx")
 
         if not models:
             self.query_one("#dash-models", Static).update(
@@ -1915,8 +2172,10 @@ class TrackerApp(WideTableMixin, App):
         else:
             top = models[:self.cfg["top_n"]]
             def name(r):
-                tag = " · 3P" if r["provider"] not in (None, "builtin") else ""
-                return clip(r["model"] + tag, 24)
+                # The same merged label as the Tokens tab: a built-in row says
+                # `Built-in`, a BYOK row names the channel that served it.
+                return clip(f"{r['model']} · {db.provider_label(r['provider'])}",
+                            24)
             self.query_one("#dash-models", Static).update("\n".join(
                 f"{i}. {name(r):<24}"
                 f"{fmt_credit_total(r['credits'], r['credits_carried']):>10}"
@@ -1933,18 +2192,47 @@ class TrackerApp(WideTableMixin, App):
                 f"{count_n(r['calls'], 'call'):>12} · {ms(r['avg_ms'])}"
                 for i, r in enumerate(live, 1)))
 
+        self._render_project_board(conn, start, end)
         self._render_dashboard_activity(daily, start, end)
         if not any(kpi.values()) and not (summary["requests"] or 0):
             self.query_one("#dash-note", Static).update(
                 "No data in this window — widen the range above.")
         else:
+            capture = ""
+            if kpi["first_token_ts"]:
+                capture = (
+                    f" Token capture began {ts(kpi['first_token_ts'])}: before it, "
+                    f"{fmt_n(kpi['capture_before'])} calls recorded credits only and "
+                    f"cannot be recovered; since then {fmt_coverage(kpi['capture_since_covered'], kpi['capture_since_requests'])}"
+                    " are token-covered.")
             self.query_one("#dash-note", Static).update(
-                "Route: Built-in = Qoder's own, 3P = a BYOK/third-party channel "
-                "(Provider names it). Credits and tokens can coexist: a hosted call "
-                "made with QODERCN_EXPOSE_TOKEN_USAGE=1 reports both, while legacy "
-                "hosted calls report credits only. Coverage is the measured share of "
-                "requests. `—` = no call in this window reported a token; `-` = "
-                "nothing contributed at all.")
+                "Provider: Built-in = Qoder's own route; any other name is the "
+                "BYOK/third-party channel that served the call. Credits and tokens "
+                "can coexist: a hosted call made with QODERCN_EXPOSE_TOKEN_USAGE=1 "
+                "reports both, while legacy hosted calls report credits only. "
+                "Coverage is the share of requests that reported a token. `—` = no "
+                "call in this window reported a token; `-` = nothing contributed at "
+                "all. Enter on a project row opens its session ledger." + capture)
+
+    def _render_project_board(self, conn, start, end) -> None:
+        rows = db.q_project_board(conn, start, end)
+        out, keys = [], []
+        for r in rows:
+            rep = bool(r["token_covered"])
+            api = (None if r["input_tokens"] is None
+                   or r["output_tokens"] is None
+                   else r["input_tokens"] + r["output_tokens"])
+            out.append([
+                r["project"] or "(no project)", fmt_n(r["sessions"]),
+                fmt_n(r["requests"]),
+                fmt_credit_total(r["credits"], r["credits_carried"]),
+                fmt_tok(api, rep),
+                pct(db.token_coverage(r["token_covered"], r["requests"])),
+                fmt_n(r["compactions"]), ts(r["last_used"])])
+            keys.append([r["project"] if r["project"] is not None
+                         else NULL_PROJECT_KEY])
+        self._fill_wide("dash-projects", out, EMPTY_MSG["projects"],
+                        key_index=0, key_kind="project", key_rows=keys)
 
     # Block characters for the per-day sparkline (index 0 = no activity).
     _SPARK = " ▁▂▃▄▅▆▇█"
@@ -2081,13 +2369,13 @@ class TrackerApp(WideTableMixin, App):
         rows = db.q_usage_request_logs(conn, start, end,
                                        limit=self.cfg["log_limit"])
         self.query_one("#usage-note", Static).update(
-            "Newest first · Enter opens the call · Route: Built-in (Qoder) or 3P "
-            "(BYOK) · Provider names the channel · Usage Total re-adds cache hit "
+            "Newest first · Enter opens the call · Provider: Built-in (Qoder) or "
+            "the BYOK channel that served it · Usage Total re-adds cache hit "
             "(it is already inside Input) · cache miss is derived · credits and "
             "tokens can coexist · `—` = this call reported no token, `-` = the "
-            "field is absent · Coverage (above) is the measured share of requests "
-            "· run `qcut env` to capture tokens on future CLI calls. No duration "
-            "or status column: the transcripts carry neither."
+            "field is absent · Coverage (above) is the share of requests that "
+            "reported a token · run `qcut env` to capture tokens on future CLI "
+            "calls. No duration or status column: the transcripts carry neither."
             if rows else "")
         out = []
         for r in rows:
@@ -2096,8 +2384,8 @@ class TrackerApp(WideTableMixin, App):
             # it shows `—`.
             rep = db.row_reports_tokens(r)
             out.append([
-                ts(r["ts"]), r["model"] or "-", provider_cell(r["provider"]),
-                db.route_label(r["provider"]), fmt_credits(r["credits"]),
+                ts(r["ts"]), r["model"] or "-", db.provider_label(r["provider"]),
+                fmt_credits(r["credits"]),
                 fmt_tok(r["usage_total_tokens"], rep), fmt_tok(r["input_tokens"], rep),
                 fmt_tok(r["output_tokens"], rep), fmt_tok(r["total_tokens"], rep),
                 fmt_tok(r["cache_read_tokens"], rep),
@@ -2136,8 +2424,11 @@ class TrackerApp(WideTableMixin, App):
     def _fill_agents(self, conn, start=None, end=None) -> None:
         self._fill_wide(
             "agents-table",
-            [[r["agent_type"], fmt_n(r["calls"]), fmt_n(r["completed"]),
-              ts(r["last_used"])]
+            [[r["agent_type"], fmt_n(r["runs"]), fmt_n(r["completed"]),
+              fmt_n(r["requests"]),
+              fmt_tok(HistoryScreen._api_total(r), bool(r["token_covered"])),
+              fmt_credit_total(r["credits"], r["credits_carried"]),
+              pct(r["peak_context"]), ts(r["last_used"])]
              for r in db.q_agents(conn, start_ts=start, end_ts=end)],
             EMPTY_MSG["agents"], key_index=0, key_kind="agent")
 
@@ -2167,17 +2458,21 @@ class TrackerApp(WideTableMixin, App):
     def _fill_tokens(self, conn, start=None, end=None) -> None:
         rows = []
         keys = []
+        covered = requests = credits_only = unmeasured = 0
         for r in db.q_models(conn, start_ts=start, end_ts=end):
             # The same count drives the Coverage column and the `—` in this row's
             # token cells, and it is the expression the Usage page and Dashboard
             # use — a partial sum and a partial coverage can never disagree.
             rep = bool(r["token_covered"])
+            covered += r["token_covered"]
+            requests += r["requests"]
+            credits_only += r["credits_only"]
+            unmeasured += r["unmeasured"]
             rows.append([
-                r["model"], provider_cell(r["provider"]),
-                db.route_label(r["provider"]),
+                r["model"], db.provider_label(r["provider"]),
                 fmt_credit_total(r["credits"], r["credits_carried"]),
                 fmt_n(r["requests"]),
-                fmt_coverage(r["token_covered"], r["requests"]),
+                pct(db.token_coverage(r["token_covered"], r["requests"])),
                 fmt_tok(r["usage_total_tokens"], rep),
                 fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
                 fmt_tok(r["total_tokens"], rep), fmt_tok(r["cache_read_tokens"], rep),
@@ -2188,6 +2483,26 @@ class TrackerApp(WideTableMixin, App):
             # One model name can appear under two providers, so the drill-down
             # must carry the channel too or it widens back to both.
             keys.append([r["model"], r["provider"] or ""])
+        if rows:
+            # The cell is only a share; the counts that make it checkable live
+            # here. They are also the answer to "partial sum of what?" — a
+            # credits-only call still contributes credits and no token.
+            capture = db.q_capture_timeline(conn, start, end)
+            since = (""
+                     if not capture["first_ts"] else
+                     f"\nToken capture began {ts(capture['first_ts'])} · before it "
+                     f"{fmt_n(capture['before_requests'])} calls recorded credits "
+                     f"without a token and cannot be recovered · since then "
+                     f"{fmt_coverage(capture['since_covered'], capture['since_requests'])}"
+                     " are token-covered")
+            self.query_one("#tokens-note", Static).update(
+                f"Coverage = share of requests that reported a token (not token "
+                f"volume) · window: {fmt_coverage(covered, requests)} · "
+                f"{fmt_n(credits_only)} credits-only · {fmt_n(unmeasured)} "
+                f"unmeasured\nProvider: Built-in (Qoder) or the BYOK channel "
+                f"that served it · `—` = no token reported" + since)
+        else:
+            self.query_one("#tokens-note", Static).update("")
         self._fill_wide("tokens-table", rows, EMPTY_MSG["tokens"],
                         key_index=(0, 1), key_kind="model", key_rows=keys)
 
@@ -2406,6 +2721,11 @@ class TrackerApp(WideTableMixin, App):
             model, _, provider = rest.partition("\t")
             self.push_screen(ModelResponsesScreen(
                 model, start, end, label, provider=provider or None))
+        elif kind == "project":
+            # A Dashboard project row opens its session ledger; the session row
+            # then opens the requests, and a request its own detail.
+            project = None if rest == NULL_PROJECT_KEY else rest
+            self.push_screen(ProjectScreen(project, start, end, label))
         else:
             self.push_screen(HistoryScreen(kind, rest, start_ts=start,
                                            end_ts=end, window_label=label))
@@ -2446,7 +2766,7 @@ class TrackerApp(WideTableMixin, App):
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Qoder CN usage TUI")
+    parser = argparse.ArgumentParser(description="Qoder CN CLI usage TUI")
     parser.add_argument("--db", default=str(db.DB_PATH))
     args = parser.parse_args(argv)
     try:

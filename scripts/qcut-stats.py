@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""qcut-stats — headless reports over the Qoder CN usage index.
+"""qcut-stats — headless reports over the Qoder CN CLI usage index.
 
 Read-only: every report subcommand only reads the database. The maintenance
 subcommands (`backup`, `restore`, `vacuum`) and `format --write` are the only
@@ -8,6 +8,7 @@ writers, and each says so in its own help.
     python3 scripts/qcut-stats.py stats            # overview of every category
     python3 scripts/qcut-stats.py tools|skills|agents|plugins|mcp
     python3 scripts/qcut-stats.py models           # per-model tokens + credits
+    python3 scripts/qcut-stats.py projects         # project ledger + session drill-down
     python3 scripts/qcut-stats.py commands         # slash-command usage
     python3 scripts/qcut-stats.py show tool Bash   # recent calls for one entity
     python3 scripts/qcut-stats.py recent
@@ -17,6 +18,9 @@ writers, and each says so in its own help.
     python3 scripts/qcut-stats.py env              # token-capture advice
     python3 scripts/qcut-stats.py vacuum           # compact (snapshots first)
     python3 scripts/qcut-stats.py format           # the Qoder format surface
+
+The indexed object is the Qoder CN **CLI** (its transcript files). The IDE /
+desktop app writes a different store, which qcut does not read.
 
 Standard library only.
 """
@@ -106,6 +110,20 @@ def fmt_credit_total(value, carried):
     return fmt_credits(value)
 
 
+def pct(value):
+    """A stored 0..1 ratio, or ``-`` when nothing in the window measured one."""
+    if value is None:
+        return "-"
+    return f"{value * 100:.1f}%"
+
+
+def _api_total(row):
+    """input + output, rendered as a token cell under the same coverage flag."""
+    if row["input_tokens"] is None or row["output_tokens"] is None:
+        return None
+    return row["input_tokens"] + row["output_tokens"]
+
+
 def _display_width(text: str) -> int:
     """Terminal cells a string takes: East-Asian wide characters count as 2."""
     import unicodedata
@@ -162,10 +180,10 @@ def cmd_stats(conn, args):
     span = "-" if not (o["first_ts"] or o["last_ts"]) \
         else f"{ts(o['first_ts'])} .. {ts(o['last_ts'])}"
     lines = [
-        "Qoder CN usage — all time",
+        "Qoder CN CLI usage — all time",
         "",
-        f"  sessions indexed     {fmt_n(k['model_sessions'] or k['tool_sessions'])}",
-        f"  projects             {fmt_n(k['tool_projects'] or k['model_projects'])}",
+        f"  sessions indexed     {fmt_n(k['model_sessions'])}",
+        f"  projects             {fmt_n(k['model_projects'])}",
         f"  range                {span}",
         "",
         f"  model requests       {fmt_n(k['requests'])}",
@@ -176,19 +194,44 @@ def cmd_stats(conn, args):
         f"  output tokens        {token_line(k['output_tokens'])}",
         f"  cache read tokens    {token_line(k['cache_read_tokens'])}",
         f"  credits              {fmt_credit_total(k['credits'], k['credits_carried'])}",
+        f"  agent requests       {fmt_n(k['agent_requests'])}"
+        f"  ({fmt_credit_total(k['agent_credits'], k['agent_credits'])} credits)",
+        f"  peak context         {pct(k['peak_context'])}",
+        f"  compactions          {fmt_n(k['compactions'])}"
+        f"  ({fmt_n(k['compacted_tokens'])} context tokens dropped, "
+        f"{ms(k['compaction_avg_ms'])})",
         "",
         f"  tool calls           {fmt_n(k['tool_calls'])}"
         f"  ({fmt_n(k['tool_failed'])} failed, {fmt_n(k['tool_pending'])} pending)",
         f"  distinct tools       {fmt_n(len(db.q_tools(conn)))}",
         f"  skill invocations    {fmt_n(k['skill_calls'])}"
         f"  ({fmt_n(k['skill_names'])} distinct)",
-        f"  subagent calls       {fmt_n(k['agent_calls'])}"
+        f"  agent runs           {fmt_n(k['agent_calls'])}"
         f"  ({fmt_n(k['agent_names'])} types)",
         f"  mcp calls            {fmt_n(k['mcp_calls'])}"
         f"  ({fmt_n(k['mcp_servers'])} servers)",
         f"  slash commands       {fmt_n(sum(r['calls'] for r in commands))}"
         f"  ({fmt_n(len(commands))} distinct)",
     ]
+    # The all-time coverage is dominated by calls written before the CLI was run
+    # with the capture flag. Split the index at the first token-covered call so
+    # that structural unmeasurability cannot read as a broken parser.
+    if k["first_token_ts"]:
+        lines += [
+            "",
+            f"  token capture began  {ts(k['first_token_ts'])}",
+            f"  before capture       {fmt_n(k['capture_before'])} requests · credits"
+            f" only, unrecoverable",
+            f"  since capture        {fmt_coverage(k['capture_since_covered'], k['capture_since_requests'])}"
+            f" token-covered",
+        ]
+    elif k["requests"]:
+        lines += [
+            "",
+            "  token capture        not observed yet — index every token field reads",
+            "                       zero; run the CLI with "
+            f"{db.TOKEN_ENV_NAME}=1",
+        ]
     if k["requests"] and k["token_covered"] < k["requests"]:
         if k["token_covered"]:
             note = (f"token sums cover only the {k['token_covered']:,} of "
@@ -228,10 +271,78 @@ def cmd_skills(conn, args):
 
 def cmd_agents(conn, args):
     rows = db.q_agents(conn, limit=_limit(args))
-    cur = [[r["agent_type"], fmt_n(r["calls"]), fmt_n(r["completed"]), ts(r["last_used"])]
-           for r in rows]
-    print(table(["agent type", "calls", "ok", "last used"], cur,
-                aligns=["<", ">", ">", "<"]))
+    if not rows:
+        print("no agent runs recorded yet — run `qcut sync`")
+        return 0
+    # A run is one `Agent` tool call; requests/tokens/credits are the responses
+    # its own `parent_tool_use_id` links to it. A run whose sidechain file was
+    # never indexed keeps 0 requests and `-` tokens rather than a guess.
+    cur = []
+    for r in rows:
+        rep = bool(r["token_covered"])
+        cur.append([r["agent_type"], fmt_n(r["runs"]), fmt_n(r["completed"]),
+                    fmt_n(r["requests"]),
+                    fmt_tok(_api_total(r), rep),
+                    fmt_credit_total(r["credits"], r["credits_carried"]),
+                    pct(r["peak_context"]), ts(r["last_used"])])
+    print(table(["agent type", "runs", "ok", "requests", "api tokens",
+                 "credits", "peak ctx", "last used"], cur,
+                aligns=["<", ">", ">", ">", ">", ">", ">", "<"]))
+    print()
+    print("  runs = Agent tool calls · requests = responses linked by the")
+    print("         transcript's own parent_tool_use_id (not inferred)")
+    return 0
+
+
+def cmd_projects(conn, args):
+    start, end = _window_from_args(args)
+    if args.project is None:
+        rows = db.q_project_board(conn, start, end, limit=_limit(args))
+        if not rows:
+            print("no project requests in this window")
+            return 0
+        cur = []
+        for r in rows:
+            rep = bool(r["token_covered"])
+            cur.append([
+                r["project"] or "(no project)", fmt_n(r["sessions"]),
+                fmt_n(r["requests"]),
+                fmt_tok(_api_total(r), rep),
+                fmt_credit_total(r["credits"], r["credits_carried"]),
+                fmt_coverage(r["token_covered"], r["requests"]),
+                fmt_n(r["compactions"]), fmt_n(r["compacted_tokens"]),
+                ts(r["last_used"])])
+        print(table(["project", "sessions", "requests", "api tokens", "credits",
+                     "coverage", "compactions", "compacted", "last used"], cur,
+                    aligns=["<", ">", ">", ">", ">", ">", ">", ">", "<"]))
+        print()
+        print("  projects are the transcript's own cwd · compacted = context tokens")
+        print("             dropped by compactions (never added to a token total)")
+        print("  drill down: qcut projects <path>")
+        return 0
+    project = args.project
+    if not db.q_project_exists(conn, project):
+        print(f"no such project: {project}", file=sys.stderr)
+        return 1
+    summary = db.q_project_summary(conn, project, start, end)
+    print(f"project: {project}")
+    for key in summary.keys():
+        print(f"  {_SHOW_LABELS.get(key, key):<18} "
+              f"{_fmt_field(key, summary[key], summary)}")
+    print()
+    rows = db.q_project_sessions(conn, project, start, end, limit=_limit(args, 50))
+    if not rows:
+        print("  (no sessions in this window)")
+        return 0
+    cur = [[r["session_id"] or "-", ts(r["last_used"]), fmt_n(r["requests"]),
+            fmt_tok(_api_total(r), bool(r["token_covered"])),
+            fmt_credit_total(r["credits"], r["credits_carried"]),
+            fmt_coverage(r["token_covered"], r["requests"]),
+            pct(r["peak_context"]), fmt_n(r["compactions"]),
+            fmt_n(r["compacted_tokens"]), r["model"] or "-"] for r in rows]
+    print(table(["session", "last used", "requests", "api tokens", "credits",
+                 "coverage", "peak ctx", "compactions", "compacted", "model"],
+                cur, aligns=["<", "<", ">", ">", ">", ">", ">", ">", ">", "<"]))
     return 0
 
 
@@ -256,7 +367,7 @@ def cmd_models(conn, args):
     for r in rows:
         rep = bool(r["token_covered"])
         cur.append([
-            r["model"], r["provider"] or "-", fmt_n(r["requests"]),
+            r["model"], db.provider_label(r["provider"]), fmt_n(r["requests"]),
             fmt_coverage(r["token_covered"], r["requests"]),
             fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
             fmt_tok(r["total_tokens"], rep),
@@ -304,6 +415,8 @@ _SHOW_LABELS = {
     "token_covered": "token covered", "credits_only": "credits-only",
     "unmeasured": "unmeasured", "token_coverage": "coverage",
     "missing_input": "missing input", "missing_output": "missing output",
+    "peak_context": "peak context", "compacted_tokens": "compacted",
+    "credits_carried": "credits carried", "agent_type": "agent type",
 }
 
 
@@ -323,6 +436,12 @@ def _fmt_field(key, value, row=None):
         return ms(value)
     if key == "token_coverage":
         return "-" if value is None else f"{value * 100:.1f}%"
+    if key == "peak_context":
+        return pct(value)
+    if key == "provider":
+        # The stored sentinel `builtin` is not a label; the TUI shows the same
+        # `Built-in` for the column, so the headless report does too.
+        return db.provider_label(value)
     if key == "credits":
         if row is not None and "credits_carried" in row.keys():
             return fmt_credit_total(value, row["credits_carried"])
@@ -379,7 +498,15 @@ def cmd_inventory(conn, args):
                         ("command", db.q_commands)):
         for r in query(conn):
             key = r[0]
-            used[(kind, key)] = r["calls"] if "calls" in r.keys() else r["uses"]
+            # `q_agents` counts runs after schema v2; plugins count uses; the
+            # rest count calls.
+            if "calls" in r.keys():
+                count = r["calls"]
+            elif "uses" in r.keys():
+                count = r["uses"]
+            else:
+                count = r["runs"]
+            used[(kind, key)] = count
     # Inventory names MCP *servers*; usage rows are (server, tool). Summing per
     # server is the only key the two tables share.
     mcp_used = {}
@@ -415,7 +542,7 @@ def cmd_export(conn, args):
     out = {}
     for table_name in ("sessions", "model_calls", "tool_calls", "skill_usage",
                        "agent_usage", "mcp_usage", "plugin_usage", "commands",
-                       "inventory", "unparsed"):
+                       "compactions", "inventory", "unparsed"):
         # Empty rather than an error on a database sync has not built yet, so a
         # backup script can dump a fresh install without special-casing it.
         rows = db.q_usage_safe(conn, f"SELECT * FROM {table_name}")
@@ -475,6 +602,17 @@ def cmd_health(conn, args):
         print(f"  coverage  {fmt_coverage(k['token_covered'], k['requests'])} "
               f"token-covered · {fmt_n(k['credits_only'])} credits-only · "
               f"{fmt_n(k['unmeasured'])} unmeasured")
+        if k["first_token_ts"]:
+            print(f"  capture   began {ts(k['first_token_ts'])} · before it "
+                  f"{fmt_n(k['capture_before'])} requests are unrecoverable · "
+                  f"since then "
+                  f"{fmt_coverage(k['capture_since_covered'], k['capture_since_requests'])}")
+        else:
+            print(f"  capture   not observed yet (run the CLI with "
+                  f"{db.TOKEN_ENV_NAME}=1)")
+        print(f"  context   peak {pct(k['peak_context'])} · "
+              f"{fmt_n(k['compactions'])} compactions dropping "
+              f"{fmt_n(k['compacted_tokens'])} context tokens")
     print()
     unparsed = db.q_unparsed(conn)
     if unparsed:
@@ -502,6 +640,14 @@ def cmd_env(conn, args):
         print(f"  token-covered  {fmt_coverage(k['token_covered'], k['requests'])}")
         print(f"  credits-only   {fmt_n(k['credits_only'])}")
         print(f"  unmeasured     {fmt_n(k['unmeasured'])}")
+        if k["first_token_ts"]:
+            print()
+            print(f"capture began {ts(k['first_token_ts'])}")
+            print(f"  before       {fmt_n(k['capture_before'])} requests — credits only,")
+            print(f"               written before the flag; qcut cannot recover them")
+            print(f"  since        "
+                  f"{fmt_coverage(k['capture_since_covered'], k['capture_since_requests'])}"
+                  f" token-covered")
     else:
         print("index coverage: no index yet — run `qcut sync`")
     print()
@@ -675,6 +821,7 @@ COMMANDS = {
     "plugins": cmd_plugins,
     "mcp": cmd_mcp,
     "models": cmd_models,
+    "projects": cmd_projects,
     "commands": cmd_commands,
     "show": cmd_show,
     "recent": cmd_recent,
@@ -686,7 +833,8 @@ COMMANDS = {
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="qcut", description="Qoder CN usage reports.")
+    parser = argparse.ArgumentParser(prog="qcut",
+                                     description="Qoder CN CLI usage reports.")
     parser.add_argument("--db", default=str(db.DB_PATH))
     sub = parser.add_subparsers(dest="cmd")
 
@@ -697,6 +845,14 @@ def main(argv=None) -> int:
         sub.add_parser(name)
     for name in ("tools", "skills", "agents", "mcp", "commands", "recent"):
         sub.add_parser(name).add_argument("--limit", type=int, default=None)
+
+    # A project board is windowed like the TUI tab it mirrors; an optional
+    # project path drills into its sessions. The path is a positional because
+    # it is the subject of the command, not a filter on a list.
+    p = sub.add_parser("projects")
+    p.add_argument("project", nargs="?", default=None)
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--range", default=None, choices=list(db.USAGE_RANGES))
 
     p = sub.add_parser("inventory")
     p.add_argument("--kind", default=None)

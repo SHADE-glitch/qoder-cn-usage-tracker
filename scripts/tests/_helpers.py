@@ -62,6 +62,32 @@ def tool_use(call_id, name, **args):
     return {"type": "tool_use", "id": call_id, "name": name, "input": args}
 
 
+def compact(sid, ts="2026-10-01T10:05:00.000Z", trigger="auto",
+            pre_tokens=1200, post_tokens=300, messages=None, duration_ms=9000,
+            cwd="/work/demo"):
+    """A `system` / `compact_boundary` record, metadata only.
+
+    Mirrors the shape the CLI writes; the summarized messages themselves are
+    absent on purpose — the parser must never need them.
+    """
+    return {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "timestamp": ts,
+        "sessionId": sid,
+        "cwd": cwd,
+        "isSidechain": False,
+        "entrypoint": "cli",
+        "compactMetadata": {
+            "trigger": trigger,
+            "preTokens": pre_tokens,
+            "postTokens": post_tokens,
+            "messagesSummarized": messages if messages is not None else 12,
+            "durationMs": duration_ms,
+        },
+    }
+
+
 def now_iso(offset_seconds=0):
     """A transcript timestamp relative to now, so a windowed query sees it."""
     from datetime import datetime, timedelta, timezone

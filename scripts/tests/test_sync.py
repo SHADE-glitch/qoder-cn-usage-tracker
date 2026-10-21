@@ -11,7 +11,8 @@ import os
 import types
 import unittest
 
-from _helpers import TempTree, assistant, load_sync, tool_result, tool_use, usage
+from _helpers import (TempTree, assistant, compact, load_sync, tool_result,
+                      tool_use, usage)
 import qcut_db as db
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
@@ -101,6 +102,82 @@ class ModelCallTest(unittest.TestCase):
         ])
         self.t.sync()
         self.assertEqual(self.t.one("SELECT is_sidechain FROM model_calls")["is_sidechain"], 1)
+
+    def test_a_sidechain_response_keeps_its_launching_run_link(self):
+        """The run link is Qoder's own `parent_tool_use_id`, never inferred.
+
+        Without it a subagent's responses are visible but unattributable, which
+        is how 15% of this machine's credits went unassigned to a run.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", usage=usage(input_tokens=5), isSidechain=True,
+                      parent_tool_use_id="toolu_agent1", agentId="agent-7"),
+        ])
+        self.t.sync()
+        row = self.t.one("SELECT parent_call_id, agent_id FROM model_calls")
+        self.assertEqual(row["parent_call_id"], "toolu_agent1")
+        self.assertEqual(row["agent_id"], "agent-7")
+
+    def test_a_main_chain_response_has_no_invented_run_link(self):
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", usage=usage(input_tokens=5)),
+        ])
+        self.t.sync()
+        row = self.t.one("SELECT parent_call_id, agent_id FROM model_calls")
+        self.assertIsNone(row["parent_call_id"])
+        self.assertIsNone(row["agent_id"])
+
+
+class CompactionTest(unittest.TestCase):
+    """`compact_boundary` records are indexed from metadata, never content."""
+
+    def setUp(self):
+        self.t = TempTree(self)
+
+    def test_a_compact_boundary_lands_in_its_own_table(self):
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            compact("s1", trigger="manual", pre_tokens=1200, post_tokens=300,
+                    messages=12, duration_ms=9000),
+        ])
+        summary = self.t.sync()
+        row = self.t.one("SELECT * FROM compactions")
+        self.assertEqual(row["session_id"], "s1")
+        self.assertEqual(row["project"], "/work/demo")
+        self.assertEqual(row["trigger"], "manual")
+        self.assertEqual(row["pre_tokens"], 1200)
+        self.assertEqual(row["post_tokens"], 300)
+        self.assertEqual(row["messages_summarized"], 12)
+        self.assertEqual(row["duration_ms"], 9000)
+        self.assertEqual(summary["counts"].get("compactions"), 1, summary["counts"])
+
+    def test_a_system_record_is_claimed_not_counted_as_unparsed(self):
+        """`system` carries compactions and other CLI state we drop by design.
+
+        Counting it as unparsed would make every CLI run look like the format
+        moved, drowning the signal the counter exists to give.
+        """
+        rec = compact("s1")
+        rec["subtype"] = "some_future_subtype"
+        self.t.write("projects/-work-demo/s1.jsonl", [rec])
+        self.t.sync()
+        self.assertEqual(self.t.rows("SELECT * FROM unparsed"), [])
+        self.assertEqual(self.t.one("SELECT COUNT(*) c FROM compactions")["c"], 0)
+
+    def test_the_same_compaction_is_not_counted_twice(self):
+        path = self.t.write("projects/-work-demo/s1.jsonl", [compact("s1")])
+        self.t.sync()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(compact("s1")) + "\n")
+        second = self.t.sync()
+        self.assertNotIn("compactions", second["counts"], second["counts"])
+        self.assertEqual(self.t.one("SELECT COUNT(*) c FROM compactions")["c"], 1)
+
+    def test_a_compaction_without_metadata_is_not_fabricated(self):
+        rec = compact("s1")
+        del rec["compactMetadata"]
+        self.t.write("projects/-work-demo/s1.jsonl", [rec])
+        self.t.sync()
+        self.assertEqual(self.t.one("SELECT COUNT(*) c FROM compactions")["c"], 0)
 
 
 class RouteOriginTest(unittest.TestCase):

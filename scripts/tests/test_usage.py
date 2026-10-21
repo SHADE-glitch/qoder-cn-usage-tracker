@@ -21,13 +21,13 @@ def ms_on(days_ago=0, hour=12):
     return int((day - timedelta(days=days_ago)).timestamp() * 1000)
 
 
-class RouteLabelTest(unittest.TestCase):
-    """`Route` is derived once, so the Tokens and Usage tabs cannot disagree."""
+class ProviderLabelTest(unittest.TestCase):
+    """One Provider column carries the family and the channel name."""
 
     def test_builtin_third_party_and_unknown(self):
-        self.assertEqual(db.route_label("builtin"), "Built-in")
-        self.assertEqual(db.route_label("Volcano ARK"), "3P")
-        self.assertEqual(db.route_label(None), "-")
+        self.assertEqual(db.provider_label("builtin"), "Built-in")
+        self.assertEqual(db.provider_label("Volcano ARK"), "Volcano ARK")
+        self.assertEqual(db.provider_label(None), "-")
 
 
 class WindowTest(unittest.TestCase):
@@ -830,6 +830,151 @@ class CliReportTest(unittest.TestCase):
         self.assertIn("no calls in this window", out)
 
 
+class LedgerQueryTest(unittest.TestCase):
+    """Run cost, project/session ledgers, compactions and the capture split.
+
+    The links here are explicit `parent_call_id` values, because that is the only
+    thing the queries are allowed to use; a seed that expected inference would
+    prove the wrong contract.
+    """
+
+    def setUp(self):
+        self.t = TempTree(self)
+        t0, t1 = ms_on(1), ms_on(0)
+        self.t0 = t0
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, cache_read_tokens, credits,"
+            " context_usage_ratio, is_sidechain, has_usage, parent_call_id,"
+            " agent_id) VALUES"
+            " ('m1','s1','/a',?, 'qfmodel','builtin', 100,10,80, 0, 0.40, 1,1,"
+            "  'a1','ag1'),"
+            " ('m2','s1','/a',?, 'qfmodel','builtin', 0,0,0, 2.0, 0.55, 1,1,"
+            "  'a1','ag1'),"
+            " ('m3','s2','/b',?, 'ark','Volcano ARK', 50,5,0, NULL, 0.10, 0,1,"
+            "  NULL,NULL),"
+            " ('m4','s2','/b',?, 'qfmodel','builtin', 0,0,0, 1.0, 0.20, 1,1,"
+            "  'a2',NULL)",
+            (t0, t0, t1, t1))
+        conn.execute(
+            "INSERT INTO agent_usage(call_id, agent_type, session_id, project, ts,"
+            " status) VALUES"
+            " ('a1','Explore','s1','/a',?,'completed'),"
+            " ('a2','Explore','s2','/b',?,'error')", (t0, t1))
+        conn.execute(
+            "INSERT INTO compactions(session_id, ts, project, trigger, pre_tokens,"
+            " post_tokens, messages_summarized, duration_ms) VALUES"
+            " ('s1',?,'/a','auto',1000,200,10,5000),"
+            " ('s2',?,'/b','manual',900,100,8,7000)", (t0, t1))
+        conn.commit()
+        conn.close()
+
+    def q(self, fn, *args, **kw):
+        conn = self.t.conn()
+        try:
+            return fn(conn, *args, **kw)
+        finally:
+            conn.close()
+
+    def test_agent_runs_aggregate_only_their_linked_responses(self):
+        rows = {r["agent_type"]: r for r in self.q(db.q_agents)}
+        explore = rows["Explore"]
+        self.assertEqual(explore["runs"], 2)
+        self.assertEqual(explore["completed"], 1)
+        self.assertEqual(explore["requests"], 3)
+        self.assertEqual(explore["credits"], 3.0)
+        self.assertEqual(explore["token_covered"], 1)
+        self.assertEqual(explore["peak_context"], 0.55)
+        self.assertIsNotNone(explore["input_tokens"])
+
+    def test_an_unlinked_response_is_not_attributed_to_a_run(self):
+        # m3 has no parent and must not leak into Explore's cost.
+        self.assertAlmostEqual(
+            self.q(db.q_agents)[0]["credits"], 3.0,
+            msg="an unlinked BYOK response changed a run's cost")
+
+    def test_a_run_drill_down_lists_its_own_responses(self):
+        rows = self.q(db.q_agent_run_calls, "a1")
+        self.assertEqual([r["call_id"] for r in rows], ["m1", "m2"])
+
+    def test_a_project_board_carries_cost_and_compaction_tax(self):
+        rows = {r["project"]: r for r in self.q(db.q_project_board)}
+        self.assertEqual(rows["/a"]["requests"], 2)
+        self.assertEqual(rows["/a"]["sessions"], 1)
+        self.assertEqual(rows["/a"]["credits"], 2.0)
+        self.assertEqual(rows["/a"]["compactions"], 1)
+        self.assertEqual(rows["/a"]["compacted_tokens"], 800)
+        self.assertEqual(rows["/b"]["requests"], 2)
+        self.assertEqual(rows["/b"]["token_covered"], 1)
+        self.assertEqual(rows["/b"]["compacted_tokens"], 800)
+
+    def test_a_project_summary_is_windowed_but_existence_is_not(self):
+        conn = self.t.conn()
+        try:
+            self.assertTrue(db.q_project_exists(conn, "/a"))
+            self.assertFalse(db.q_project_exists(conn, "/nope"))
+            empty = db.q_project_summary(conn, "/a", 0, 1)
+            self.assertEqual(empty["requests"], 0)
+            self.assertEqual(empty["compactions"], 0)
+            self.assertTrue(db.q_project_exists(conn, "/a"),
+                            "existence moved with the window")
+        finally:
+            conn.close()
+
+    def test_a_project_session_ledger_keeps_its_context_pressure(self):
+        rows = self.q(db.q_project_sessions, "/a")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["session_id"], "s1")
+        self.assertEqual(rows[0]["requests"], 2)
+        self.assertEqual(rows[0]["peak_context"], 0.55)
+        self.assertEqual(rows[0]["compactions"], 1)
+
+    def test_session_requests_name_the_launching_agent(self):
+        rows = self.q(db.q_session_calls, "s1")
+        self.assertEqual([r["call_id"] for r in rows], ["m1", "m2"])
+        self.assertEqual({r["agent_type"] for r in rows}, {"Explore"})
+
+    def test_compaction_summary_splits_trigger_and_counts_context_dropped(self):
+        summary = self.q(db.q_compaction_summary)
+        self.assertEqual(summary["compactions"], 2)
+        self.assertEqual(summary["sessions"], 2)
+        self.assertEqual(summary["auto"], 1)
+        self.assertEqual(summary["manual"], 1)
+        self.assertEqual(summary["compacted_tokens"], 1600)
+        self.assertEqual(summary["peak_pre_tokens"], 1000)
+        self.assertEqual(summary["avg_ms"], 6000)
+
+    def test_capture_timeline_splits_at_the_first_token_covered_call(self):
+        timeline = self.q(db.q_capture_timeline)
+        self.assertEqual(timeline["first_ts"], self.t0)
+        self.assertEqual(timeline["requests"], 4)
+        self.assertEqual(timeline["covered"], 2)
+        self.assertEqual(timeline["before_requests"], 0)
+        self.assertEqual(timeline["since_requests"], 4)
+        self.assertEqual(timeline["since_covered"], 2)
+        self.assertEqual(timeline["since_coverage"], 0.5)
+
+    def test_the_window_capture_split_counts_only_its_own_rows(self):
+        start, end = db.window_bounds("1d", ms_on(0, 23))
+        timeline = self.q(db.q_capture_timeline, start, end)
+        self.assertEqual(timeline["first_ts"], self.t0,
+                         "the split timestamp is a fact about the index, not "
+                         "the window")
+        self.assertEqual(timeline["requests"], 2)
+        self.assertEqual(timeline["before_requests"], 0)
+        self.assertEqual(timeline["since_requests"], 2)
+
+    def test_kpi_surfaces_the_new_ledgers(self):
+        kpi = self.q(db.q_usage_kpi)
+        self.assertEqual(kpi["agent_requests"], 3)
+        self.assertEqual(kpi["agent_credits"], 3.0)
+        self.assertEqual(kpi["compactions"], 2)
+        self.assertEqual(kpi["compacted_tokens"], 1600)
+        self.assertEqual(kpi["peak_context"], 0.55)
+        self.assertEqual(kpi["first_token_ts"], self.t0)
+
+
 class SchemaTest(unittest.TestCase):
     def setUp(self):
         self.t = TempTree(self)
@@ -852,6 +997,39 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             db.migrate(self.t.db_path)
 
+    def test_a_v1_database_gains_the_v2_ledger_additively(self):
+        """v2 adds two columns and one table; existing rows are left alone.
+        Their new columns stay NULL until `qcut sync --full` backfills them,
+        which is why the release notes ask for that one full pass."""
+        db.migrate(self.t.db_path)
+        conn = self.t.conn()
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_model_calls_parent")
+            conn.execute("ALTER TABLE model_calls DROP COLUMN parent_call_id")
+            conn.execute("ALTER TABLE model_calls DROP COLUMN agent_id")
+            conn.execute("DROP TABLE compactions")
+            conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(db.migrate(self.t.db_path), "migrated")
+        conn = self.t.conn()
+        try:
+            cols = {r["name"] for r in conn.execute(
+                "PRAGMA table_info(model_calls)")}
+            self.assertIn("parent_call_id", cols)
+            self.assertIn("agent_id", cols)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM compactions").fetchone()[0], 0)
+            conn.execute(
+                "INSERT INTO model_calls(message_id, parent_call_id)"
+                " VALUES('m1','a1')")
+            conn.commit()
+            self.assertEqual(conn.execute(
+                "SELECT parent_call_id FROM model_calls").fetchone()[0], "a1")
+        finally:
+            conn.close()
+
     def test_reset_empties_the_index_but_keeps_the_schema(self):
         self.t.write("projects/-work-demo/s1.jsonl", [])
         conn = self.t.conn()
@@ -869,7 +1047,8 @@ class SchemaTest(unittest.TestCase):
         finally:
             conn.close()
         for table in ("sessions", "model_calls", "tool_calls", "skill_usage",
-                      "agent_usage", "mcp_usage", "plugin_usage", "inventory"):
+                      "agent_usage", "mcp_usage", "plugin_usage", "compactions",
+                      "inventory"):
             self.assertIn(table, counts)
 
     def test_a_read_only_open_of_a_missing_file_is_empty_not_an_error(self):
