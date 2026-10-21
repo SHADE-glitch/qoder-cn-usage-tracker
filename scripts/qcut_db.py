@@ -906,6 +906,19 @@ def provider_label(value) -> str:
     return "Built-in" if value == "builtin" else value
 
 
+def route_label(value) -> str:
+    """``Built-in`` / ``3P`` / ``-`` for the same provider value.
+
+    The short form exists so a request table can say which billing family a row
+    belongs to without repeating the channel name next to ``provider``. Qoder's
+    own routes store ``builtin``; anything else is a BYOK/third-party channel.
+    ``None`` stays ``-`` — an unknown route is not evidence of either.
+    """
+    if value is None:
+        return "-"
+    return "Built-in" if value == "builtin" else "3P"
+
+
 # --- time predicates -------------------------------------------------------
 
 

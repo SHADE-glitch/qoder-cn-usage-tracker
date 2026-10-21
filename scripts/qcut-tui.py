@@ -210,23 +210,37 @@ DEFAULT_RANGES = {
     "plugins": None, "mcp": "7d", "tokens": "1d", "usage": "1d",
 }
 
+
+def provider_cell(value):
+    """The Provider column: the channel name for 3P, `-` for Qoder's own route.
+
+    `Route` already says `Built-in`; repeating it under Provider put one fact in
+    two adjacent columns. Keeping Provider for the channel name makes the pair
+    read as family + name instead of the same value twice.
+    """
+    if value == "builtin":
+        return "-"
+    return db.provider_label(value)
+
+
 # Column sets. The Usage page is cc-switch's request list with Qoder's fields:
-# time · model · provider · usage total · input · output · API total · cache
-# hit/miss/write · credits · hit rate. Cache *miss* is derived (the input that
-# was not read from cache) and the page note says so; there is no duration or
-# HTTP-status column because the transcripts carry neither.
-USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Input", "Output",
-                 "API Total", "Cache hit", "Cache miss", "Cache write",
-                 "Credits", "Hit rate")
+# time · model · provider · route · usage total · input · output · API total ·
+# cache hit/miss/write · credits · hit rate. Cache *miss* is derived (the input
+# that was not read from cache) and the page note says so; there is no duration
+# or HTTP-status column because the transcripts carry neither. `Route` is the
+# one-word billing family (Built-in / 3P); `Provider` keeps the channel name.
+USAGE_COLUMNS = ("Time", "Model", "Provider", "Route", "Credits", "Usage Total",
+                 "Input", "Output", "API Total", "Cache hit", "Cache miss",
+                 "Cache write", "Hit rate")
 # Tokens tab: the per-model rollup, same measure family. `Tok reported` is kept
 # where cc-switch's near-always-100% "Coverage" was dropped: on Qoder a route
 # that reports credits only is a real, recurring 0, so the column is evidence
 # rather than noise. The same fact is what turns that row's token cells into `—`
 # — one expression (`db._TOKENS_REPORTED_EXPR`) feeds both, so the yes/no and the
 # dash cannot disagree.
-TOKENS_COLUMNS = ("Model", "Provider", "Requests", "Usage Total", "Input",
-                  "Output", "API Total", "Cache hit", "Cache miss",
-                  "Cache write", "Hit rate", "Credits", "Tok reported")
+TOKENS_COLUMNS = ("Model", "Provider", "Route", "Credits", "Requests",
+                  "Usage Total", "Input", "Output", "API Total", "Cache hit",
+                  "Cache miss", "Cache write", "Hit rate", "Tok reported")
 
 TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "pending", "avg", "last used")
 SKILLS_COLUMNS = ("skill", "calls", "ok", "plugin", "last used")
@@ -242,15 +256,16 @@ HISTORY_COLUMNS = {
              "session"),
     "skill": ("when", "skill", "status", "duration", "project", "session"),
     "agent": ("when", "agent type", "status", "duration", "project", "session"),
-    "model": ("when", "model", "provider", "input", "output", "api total",
-              "cache hit", "cache miss", "cache write", "credits", "stop"),
+    "model": ("when", "model", "provider", "route", "credits", "input",
+              "output", "api total", "cache hit", "cache miss", "cache write",
+              "stop"),
     "mcp": ("when", "server", "tool", "status", "duration", "session"),
 }
 # Twelve columns need ~180 cells: on an 80-wide terminal most of this table used
 # to sit past the right edge with no key that would bring it back.
-RESPONSE_COLUMNS = ("when", "model", "provider", "input", "output", "api total",
-                    "cache hit", "cache miss", "cache write", "usage total",
-                    "hit rate", "message id")
+RESPONSE_COLUMNS = ("when", "model", "provider", "route", "credits", "input",
+                    "output", "api total", "cache hit", "cache miss",
+                    "cache write", "usage total", "hit rate", "message id")
 # A plugin's own breakdown: attributed calls and installed resources.
 PLUGIN_COLUMNS = ("when", "kind", "target", "marketplace", "session", "project")
 
@@ -1147,12 +1162,13 @@ class HistoryScreen(WideTableMixin, Screen):
     @staticmethod
     def _model_row(r):
         rep = db.row_reports_tokens(r)
-        return [ts(r["ts"]), r["model"], db.provider_label(r["provider"]),
+        return [ts(r["ts"]), r["model"], provider_cell(r["provider"]),
+                db.route_label(r["provider"]), fmt_credits(r["credits"]),
                 fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
                 fmt_tok(r["total_tokens"], rep), fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
-                fmt_credits(r["credits"]), r["stop_reason"] or "-"]
+                r["stop_reason"] or "-"]
 
     def on_data_table_row_selected(self, event) -> None:
         if event.data_table.id != "hist-table":
@@ -1214,7 +1230,9 @@ class ModelResponsesScreen(WideTableMixin, Screen):
         for r in rows:
             rep = db.row_reports_tokens(r)
             out.append([ts(r["ts"]), r["model"],
-                        db.provider_label(r["provider"]),
+                        provider_cell(r["provider"]),
+                        db.route_label(r["provider"]),
+                        fmt_credits(r["credits"]),
                         fmt_tok(r["input_tokens"], rep),
                         fmt_tok(r["output_tokens"], rep),
                         fmt_tok(r["total_tokens"], rep),
@@ -1854,8 +1872,11 @@ class TrackerApp(WideTableMixin, App):
                 "nothing in this window")
         else:
             top = models[:self.cfg["top_n"]]
+            def name(r):
+                tag = " · 3P" if r["provider"] not in (None, "builtin") else ""
+                return clip(r["model"] + tag, 24)
             self.query_one("#dash-models", Static).update("\n".join(
-                f"{i}. {clip(r['model'], 24):<24}"
+                f"{i}. {name(r):<24}"
                 f"{fmt_credit_total(r['credits'], r['credits_carried']):>10}"
                 f"  {count_n(r['requests'], 'req'):>10}"
                 for i, r in enumerate(top, 1)))
@@ -1876,9 +1897,10 @@ class TrackerApp(WideTableMixin, App):
                 "No data in this window — widen the range above.")
         else:
             self.query_one("#dash-note", Static).update(
-                "Credits are Qoder's own metric; a BYOK route reports tokens "
-                "instead, never both. `—` = this window answers in credits, not "
-                "tokens; `-` = nothing contributed to it at all.")
+                "Route: Built-in = Qoder's own, 3P = a BYOK/third-party channel "
+                "(Provider names it). Credits are Qoder's own metric; a BYOK route "
+                "reports tokens instead, never both. `—` = this window answers in "
+                "credits, not tokens; `-` = nothing contributed to it at all.")
 
     # Block characters for the per-day sparkline (index 0 = no activity).
     _SPARK = " ▁▂▃▄▅▆▇█"
@@ -2013,8 +2035,9 @@ class TrackerApp(WideTableMixin, App):
         rows = db.q_usage_request_logs(conn, start, end,
                                        limit=self.cfg["log_limit"])
         self.query_one("#usage-note", Static).update(
-            "Newest first · Usage Total re-adds cache hit (it is already inside "
-            "Input) · cache miss is derived · `-` = nothing in this window, `—` "
+            "Newest first · Route: Built-in (Qoder) or 3P (BYOK) · Provider "
+            "names the channel · Usage Total re-adds cache hit (it is already "
+            "inside Input) · cache miss is derived · `-` = nothing in this window, `—` "
             "= a route that bills in credits and answers every token field with "
             "0 (a BYOK route is the reverse: real tokens, no credits field). "
             "No duration or status column: the transcripts carry neither."
@@ -2026,13 +2049,13 @@ class TrackerApp(WideTableMixin, App):
             # it shows `—`.
             rep = db.row_reports_tokens(r)
             out.append([
-                ts(r["ts"]), r["model"] or "-", db.provider_label(r["provider"]),
+                ts(r["ts"]), r["model"] or "-", provider_cell(r["provider"]),
+                db.route_label(r["provider"]), fmt_credits(r["credits"]),
                 fmt_tok(r["usage_total_tokens"], rep), fmt_tok(r["input_tokens"], rep),
                 fmt_tok(r["output_tokens"], rep), fmt_tok(r["total_tokens"], rep),
                 fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
-                fmt_credits(r["credits"]),
                 self._hit_rate(r["cache_read_tokens"], r["cache_miss_tokens"],
                                r["cache_creation_tokens"]),
             ])
@@ -2093,7 +2116,9 @@ class TrackerApp(WideTableMixin, App):
             # Dashboard use — so a `—` here and a `no` there are one fact.
             rep = bool(r["tokens_reported"])
             rows.append([
-                r["model"], db.provider_label(r["provider"]),
+                r["model"], provider_cell(r["provider"]),
+                db.route_label(r["provider"]),
+                fmt_credit_total(r["credits"], r["credits_carried"]),
                 fmt_n(r["requests"]), fmt_tok(r["usage_total_tokens"], rep),
                 fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
                 fmt_tok(r["total_tokens"], rep), fmt_tok(r["cache_read_tokens"], rep),
@@ -2101,7 +2126,6 @@ class TrackerApp(WideTableMixin, App):
                 fmt_tok(r["cache_creation_tokens"], rep),
                 self._hit_rate(r["cache_read_tokens"], r["cache_miss_tokens"],
                                r["cache_creation_tokens"]),
-                fmt_credit_total(r["credits"], r["credits_carried"]),
                 "yes" if rep else "no"])
         self._fill_wide("tokens-table", rows, EMPTY_MSG["tokens"],
                         key_index=0, key_kind="model")

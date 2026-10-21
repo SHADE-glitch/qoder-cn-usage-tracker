@@ -21,6 +21,15 @@ def ms_on(days_ago=0, hour=12):
     return int((day - timedelta(days=days_ago)).timestamp() * 1000)
 
 
+class RouteLabelTest(unittest.TestCase):
+    """`Route` is derived once, so the Tokens and Usage tabs cannot disagree."""
+
+    def test_builtin_third_party_and_unknown(self):
+        self.assertEqual(db.route_label("builtin"), "Built-in")
+        self.assertEqual(db.route_label("Volcano ARK"), "3P")
+        self.assertEqual(db.route_label(None), "-")
+
+
 class WindowTest(unittest.TestCase):
     def setUp(self):
         self.t = TempTree(self)

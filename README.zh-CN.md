@@ -97,8 +97,11 @@ Qoder CN 其实**已经写下了**你需要的数据——只是从不**展示**
 | 🤖 | **代理** | 按名字统计的子代理类型（`Explore`、`Plan`、`general-purpose`）、调用数、最近使用 |
 | 🧩 | **插件** | 全部插件——已安装的**与**用过的——带版本号；全部时间 |
 | 🔌 | **MCP** | MCP 服务与工具、调用数、平均耗时 |
-| 🔢 | **Token** | 按模型统计请求数、输入 / 输出 / API 合计、缓存读取、**积分**，以及该路由是否上报了 token |
-| 📊 | **用量** | 请求日志，最新在前：时间 · 模型 · 供应商 · 输入 · 输出 · API 合计 · 缓存读取 · 积分 · 停止原因 |
+| 🔢 | **Token** | 按模型的**路由**（`Built-in` / `3P`）、**积分**、请求数、输入 / 输出 / API 合计、缓存读取，以及该路由是否上报了 token |
+| 📊 | **用量** | 请求日志，最新在前：时间 · 模型 · 供应商 · **路由** · **积分** · 输入 · 输出 · API 合计 · 缓存读取 · 停止原因 |
+
+`路由` 一眼给出计费家族：Qoder 自有模型为 `Built-in`，BYOK/第三方渠道为 `3P`；`供应商` 沿用渠道名。
+两列由同一个存储字段推导，不会互相矛盾。
 
 **每个标签都列出「用过」与「已安装」的并集，以名字为键，按调用数排序。** 装了但没用的插件仍以 `uses = 0` 出现；卸载过的仍保留历史。
 
@@ -213,7 +216,7 @@ sync_secs = 30       # TUI 自动同步周期
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 323 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 324 tests ... OK
 ```
 
 测试套件是 `unittest`（`pytest` 也能发现它们）。其中两套需要安装 `textual`：`test_tui.py`，以及 `test_config.py`——后者的接线用例会把 TUI 模块加载起来，用以证明每个设置项真的到达渲染器。每个套件都在临时目录里自建一次性数据库**以及**一次性 Qoder 目录树——你真实的 `usage.db` 与 `~/.qoder-cn` 从不会被打开，仓库中也没有任何代码路径会访问网络。
@@ -221,7 +224,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 323 tests ... OK
 | 套件 | 用例数 | 覆盖范围 |
 |---|---:|---|
 | `test_sync.py` | 56 | 转录解析、归类（工具 / 技能 / 代理 / MCP）、路由来源、清单、增量与全量重建、被改写或结尾未换行的转录、带时间戳的状态配对、未认领记录统计、schema 里**每一张表**的幂等性、读不了的转录会被报告并在下次重试、崩溃安全 |
-| `test_usage.py` | 54 | 自然日窗口、缓存命中率、全部查询辅助函数、「已安装 ∪ 用过」并集、token/积分那**同一条**上报判定及其 SQL↔Python 镜像、把「实体不存在」与「本窗口内没用过」分开的判定、schema、最小版的 snapshot→list→restore 往返、尚无数据库的全新安装，以及无头报表的措辞 |
+| `test_usage.py` | 55 | 自然日窗口、路由标签、缓存命中率、全部查询辅助函数、「已安装 ∪ 用过」并集、token/积分那**同一条**上报判定及其 SQL↔Python 镜像、把「实体不存在」与「本窗口内没用过」分开的判定、schema、最小版的 snapshot→list→restore 往返、尚无数据库的全新安装，以及无头报表的措辞 |
 | `test_stats.py` | 42 | 无头 CLI 的端到端：每个子命令都真的调用 `main([...])`，`--db` 与 `--limit`、只读连接、索引过期时的拒绝并指出修法、`export` / `inventory` / `recent` / `show` / `health`、损坏设置文件报成一句话而不是抛栈、`backup`/`restore` 这一对、`format --write` 只在标记之间重写并**拒绝**追加进丢了标记的文档、`show` 拒绝从没见过这个名字（而不是画成一片零）、索引真实覆盖的时间跨度，以及入口脚本绝不碰它没被给过的路径 |
 | `test_snapshots.py` | 14 | 破坏性步骤的回退之路：快照在改动**之前**取、是在线备份而非把还在 `-wal` 里的主文件按字节拷贝、restore 保留它覆盖掉的状态、回收只删自己生成的文件，以及丢了偏移量的索引仍然值得一份快照 |
 | `test_config.py` | 19 | 设置层：默认值、文件、环境优先级与边界、损坏文件指名路径、`qcut health` 打印的键，以及**每个声明的旋钮都有渲染器真的去读**——用户改了却毫无效果的设置项，就是这一条在拦 |
@@ -248,7 +251,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-sync.py` | 转录解析器与增量索引器（`--full`、`--quiet`） |
 | `scripts/qcut-stats.py` | 无头报表 |
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
-| `scripts/tests/` | 上述 323 个用例 |
+| `scripts/tests/` | 上述 324 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |

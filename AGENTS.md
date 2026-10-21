@@ -222,7 +222,9 @@ tool runs from a checkout, so the version only needs to move when a documented c
   sibling, the note line above the table says so in the same round —
   `Tokens` reports **credits** alongside the tokens a route actually carried (a BYOK
   route carries no `credits` field at all, so it is stored NULL, not 0), and `Usage` is
-  per-response only where a response was recorded. The caveat is part of the contract;
+  per-response only where a response was recorded. Both tables carry a one-word
+  `Route` (`Built-in` / `3P`) beside `Provider`, derived from the same stored value so
+  the family and the channel cannot disagree. The caveat is part of the contract;
   delete it and the panel starts lying.
   The *set* is machine-checked too, and against literals rather than against
   `TABS`: `scripts/qcut-tui.py` builds its panes in a loop over that tuple, so

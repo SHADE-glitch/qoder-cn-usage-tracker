@@ -1106,10 +1106,17 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hosted["Requests"], "2")
         self.assertEqual(hosted["Credits"], "1.75")
         self.assertEqual(hosted["Tok reported"], "no")
+        # The route column is the one-word billing family beside the channel.
+        self.assertEqual(hosted["Route"], "Built-in")
+        # Provider is the channel name; Qoder's own route has none, and repeating
+        # `Built-in` here would put one fact in two columns.
+        self.assertEqual(hosted["Provider"], "-")
         byok = await self._tokens_row("byok-model")
         self.assertEqual(byok["Input"], "120")
         self.assertEqual(byok["Output"], "24")
         self.assertEqual(byok["Tok reported"], "yes")
+        self.assertEqual(byok["Route"], "3P")
+        self.assertEqual(byok["Provider"], "qoder-custom-a3d301ce")
         # E1, the other axis: that route never carried a `credits` field, so its
         # rollup is absent (`-`), not billed-zero (`0`).
         self.assertEqual(byok["Credits"], "-")
@@ -1124,7 +1131,9 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             table = app.query_one("#usage-table", DataTable)
             self.assertEqual(row_map(table, "m1")["Input"], "—")
+            self.assertEqual(row_map(table, "m1")["Route"], "Built-in")
             self.assertEqual(row_map(table, "m3")["Input"], "120")
+            self.assertEqual(row_map(table, "m3")["Route"], "3P")
             # A BYOK response carries no credits field at all: absent, which is
             # `-`, and not the `—` that means "this route counts in credits".
             self.assertEqual(row_map(table, "m3")["Credits"], "-")
