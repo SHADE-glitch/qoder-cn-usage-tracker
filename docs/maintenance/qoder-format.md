@@ -46,17 +46,20 @@ a Qoder update; the procedure is in [`MAINTENANCE.md`](../../MAINTENANCE.md).
 - skill tool: `Skill` (arguments `command`, `skill`)
 - agent tool: `Agent` (arguments `subagent_type`, `agent_type`; default `general-purpose`)
 - mcp tools: `mcp_call` -> call, `mcp_get` -> get, `mcp_list` -> list
-- mcp target: `mcp__<server>__<tool>` in the `toolName` argument
+- mcp target: `mcp__<server>__<tool>` in the `toolName` argument,
+  or used directly as the tool name (older records); both are a `call`
+- skill name: `<plugin>:<skill>` is stored as the bare skill with `plugin` split out
 - custom route: `<providerId>/<model>`, prefix `qoder-custom-`
 <!-- END GENERATED -->
 ## Where a slash command comes from
 
-Two fields, and they are not the same kind of evidence:
+Two fields, and only one of them may produce a command:
 
-- `toolUseResult.commandName` on a `user` record. Observed on this machine: 2 records
-  out of 181,907 lines, values `playwright-cli` and
-  `qoder-context:qoder-context-knowledge-plan`. This is the only command source
-  that has ever produced a row here.
+- `toolUseResult.commandName` on a `user` record, read only when the matching
+  `tool_use` is **not** `Skill`. Observed 2 records in 181,907 lines here, values
+  `playwright-cli` and `qoder-context:qoder-context-knowledge-plan` — both are the
+  Skill's own name written onto its result, not a slash command. They are ignored,
+  which is why the Commands table is empty on this index.
 - A `<command-name>name</command-name>` marker in the **text of a `user` record**.
   Qoder has not written one here yet, so the reader is a hypothesis about the
   format rather than a measured field -- it is kept because a marker that opens a

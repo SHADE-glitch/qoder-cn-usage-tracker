@@ -11,7 +11,7 @@
 
 **What it is** — A passive tracker for the [Qoder CN CLI](https://qoder.com.cn), **modeled on `cbut`** (the sibling [codebuddy-usage-tracker](https://github.com/SHADE-glitch/codebuddy-usage-tracker)): an eight-tab TUI and headless reports over every tool, skill, subagent, plugin, MCP server and model you use, plus the tokens and credits each one cost. It reads Qoder's files only and writes only its own local index.
 
-**What it solves** — the Qoder CN CLI writes one transcript per session and per subagent run; `qcut` folds them into one local SQLite file so usage, tokens and credits are visible in one place — and tells you honestly how much of that token data the CLI actually recorded.
+**What it solves** — the Qoder CN CLI writes one transcript per session and per subagent run; `qcut` folds them into one local SQLite file so usage, tokens and credits are visible in one place — and tells a measured zero apart from a route that never reported a token.
 
 **How to run** — `./install.sh`, then `qcut sync`.
 
@@ -48,13 +48,13 @@
 
 - 🧰 **Eight views, one command** — a dashboard, tools, skills, agents, plugins, MCP, tokens, usage.
 - 📜 **Full history, instantly** — backfills every session already on disk: **489 files / 522 MB in 6.8 s**, 25 MB of index, and only new bytes after that (**0.10 s** warm re-run).
-- 🔑 **Keyed by name — nothing ever disappears** — every tab lists what you have **ever** used *and* what is installed, keyed by name alone: a renamed, updated or removed entity keeps its history.
+- 🔑 **Keyed by name — history never disappears** — a tab defaults to the entities **used in its window**, the same boundary Tokens has always used; <kbd>a</kbd> widens it to installed ∪ ever-used. Either way the key is the name alone, so a renamed, updated or removed entity keeps its history.
 - 🪶 **Passive toward Qoder** — it reads Qoder's transcripts and writes only its own local index: no hook, no plugin, no Qoder source changes.
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
-- 💳 **Real credits, real tokens — as reported** — every value is stored exactly as Qoder wrote it. A hosted row can carry tokens *and* credits once capture is on; a legacy hosted row carries credits and a literal `0` in every token field; a BYOK row carries tokens and no `credits` field. Nothing is estimated, converted or backfilled, and every token sum is accompanied by its [coverage](#-token-capture).
-- 🤖 **Agent runs are a cost ledger** — Qoder writes one transcript per subagent run (`agent-aExplore-<hash>.jsonl`); qcut folds them back into the parent session and links each response to the run that launched it through Qoder's own `parent_tool_use_id`, never by guessing from time or type. The Agents tab shows runs, linked requests, API tokens, credits and peak context per type; <kbd>Enter</kbd> opens that type's runs, and <kbd>Enter</kbd> a run opens the responses it launched. An unlinked run reads `0` requests and `-` tokens instead of an invented cost.
-- 📁 **Project and context ledgers** — the Dashboard's project board goes project → session → request → call, carrying tokens, credits, coverage, peak context, compaction count and the context tokens each compaction dropped. `qcut projects` prints the same board, and `qcut projects <path>` drills into one project. A compaction's dropped tokens are shown **beside** the token totals and never added to them.
-- 🔌 **MCP in Qoder's own shape** — the model calls `mcp_call` / `mcp_get` / `mcp_list` and names the target in an argument, so the server and tool are split out of `mcp__<server>__<tool>` rather than matched against a tool name.
+- 💳 **Real credits, real tokens — as reported** — every value is stored exactly as Qoder wrote it. A hosted row can carry tokens *and* credits once the [token flag](#-token-capture) is on; a legacy hosted row carries credits and a literal `0` in every token field; a BYOK row carries tokens and no `credits` field. Nothing is estimated, converted or backfilled: `—` marks a route-level zero, `-` an absent value.
+- 🤖 **Agent runs are a cost ledger** — Qoder writes one transcript per subagent run (`agent-aExplore-<hash>.jsonl`); qcut folds them back into the parent session and links each response to the run that launched it through Qoder's own `parent_tool_use_id`, never by guessing from time or type. The Agents tab shows runs, ok/failed, linked requests, **usage total**, credits and peak context per type; <kbd>Enter</kbd> opens that type's runs, and <kbd>Enter</kbd> a run opens the responses it launched. An unlinked run reads `0` requests and `-` tokens instead of an invented cost.
+- 📁 **Project and context ledgers** — the Dashboard's project board goes project → session → request → call, carrying requests, usage total, credits, peak context and last use; the project screen adds sessions and compaction detail. `qcut projects` prints the same board, and `qcut projects <path>` drills into one project. A compaction's dropped tokens are shown **beside** the token totals and never added to them.
+- 🔌 **MCP in Qoder's own shape** — the model calls `mcp_call` / `mcp_get` / `mcp_list` and names the target in an argument, so the server and tool are split out of `mcp__<server>__<tool>`. Older transcripts that put `mcp__<server>__<tool>` directly in the tool name are recognised too, and a server-less admin op is shown as `(admin)`.
 - 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 / 3 / 7 / 14 / 30 days / All time) is kept **per tab**, so changing one never moves another. Entity tabs default to **7 days**, Dashboard / Tokens / Usage to **Today**, and Plugins is always all-time. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A **Custom…** entry and the 📅 control open cbut's date-range picker — six roomy shortcut chips, editable start/end date and time, a month calendar and an hour grid — and the picked range belongs to the active tab. The picker is 79×30, so it fits an 80×30 terminal exactly; shorter terminals scroll it.
 - 🔎 **Drill-down all the way** — <kbd>Enter</kbd> a row on Tools, Skills, Agents, MCP or Tokens for that entity's summary *in the tab's own window* above its recent calls; the Agents tab continues into its runs and their responses, and the Dashboard's project board continues into sessions and requests. A Tokens row keeps its **provider**, and a Usage row opens **that exact request** instead of a model-wide list. <kbd>Enter</kbd> a call to see **every stored field** of that single call, including its token state.
 - 🔐 **Metadata only** — names, timings, statuses, tokens, credits, projects. Never message bodies, prompts or tool-argument values.
@@ -89,9 +89,9 @@ category has a Qoder field behind it, qcut has it too. Where it does not, qcut l
 the category out and says why rather than inventing a placeholder — per-request
 duration, HTTP status and money have no Qoder field. Conversely, Qoder facts that
 `cbut` does not have are kept and made first-class: credits beside tokens, the
-three-state token coverage, `Usage Total` beside `API Total`, and cache read / miss /
-write. "What does Qoder actually record?" is the question; matching cbut's screen is
-not.
+`—`/`-` distinction for a route that reports no token, `Usage Total` beside
+`API Total`, and cache read / miss / write. "What does Qoder actually record?" is
+the question; matching cbut's screen is not.
 
 ## 🏗️ How it works
 
@@ -121,29 +121,29 @@ The **Dashboard** opens first: an at-a-glance summary of the important numbers.
 A shared top bar above the tabs carries the range selector and the 📅 control,
 and **each tab keeps its own range**. The **Plugins** tab has no window at all —
 an install fact is always all-time — so both controls are hidden there. A window
-only changes the **counts**; it never drops a row, because every tab is keyed by
-name. Choosing **Custom…** or pressing 📅 opens the date-range picker, whose
-Confirm button applies the picked start/end to the active tab only.
+changes the **counts** and which entity rows are shown; it never deletes history.
+Choosing **Custom…** or pressing 📅 opens the date-range picker, whose Confirm
+button applies the picked start/end to the active tab only.
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | KPI panel (requests, credits, tool calls, failures, sessions, projects), a tokens & credits panel with cache hit rate, peak context and compaction tax, a per-day call sparkline with credits, Top N models and Top N tools, and the **project board** (requests · sessions · credits · coverage · compactions · context dropped) — all for the Dashboard's own window |
-| 🧰 | **Tools** | tool calls by name, completion, failure, pending, average duration, last used |
-| 🎯 | **Skills** | skill invocations by name, with the owning plugin where the evidence names one |
-| 🤖 | **Agents** | subagent types with **runs · completed · linked requests · API tokens · credits · peak context · last use**; a run with no linked response reads `0` requests and `-` tokens |
-| 🧩 | **Plugins** | every plugin — installed **and** ever used — with version; all-time |
-| 🔌 | **MCP** | MCP servers and tools, invocation counts, average duration |
-| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **credits**, requests, **coverage** (the share of requests that reported a token), input / output / API total, cache read / miss / write, hit rate |
-| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **credits** · usage total · input · output · API total · cache hit / miss / write · hit rate. <kbd>Enter</kbd> opens that exact call |
+| 🧭 | **Dashboard** | a Usage panel (requests, credits, sessions, projects, builtin calls, skills, agent runs, MCP, commands, plugins), a Tokens panel with cache hit rate, runtime (completed / failed / pending / average tool time / peak context / compaction tax), a per-day sparkline with credits, Top N models, Top tools and Top commands, and the **project board** (requests · usage total · credits · peak ctx · last used) — all for the Dashboard's own window |
+| 🧰 | **Tools** | builtin tool calls by name: calls · ok · fail · pending · average duration · last used |
+| 🎯 | **Skills** | skill invocations by name: calls · ok · fail · owning plugin · last used |
+| 🤖 | **Agents** | subagent types: **runs · ok · fail · linked requests · usage total · credits · peak context · last used**; a run with no linked response reads `0` requests and `-` tokens |
+| 🧩 | **Plugins** | every plugin — installed **and** ever used — with source, version, attributed uses and installed resources; all-time |
+| 🔌 | **MCP** | MCP targets: server · tool · calls · ok · fail · average duration · last used; an admin op shows `(admin)` |
+| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **usage total · credits · requests**, input / output / API total, cache hit / miss / write, hit rate, last used |
+| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **usage total · credits** · input · output · API total · cache hit / miss / write · hit rate. <kbd>Enter</kbd> opens that exact call |
 
 `Provider` is one column, not a family plus a name: Qoder's own route reads
-`Built-in`, and a BYOK/third-party call shows the channel that served it. The
-Tokens tab keeps a bare coverage share per model and spells out the window's
-`token-covered / credits-only / unmeasured` counts on its note line.
+`Built-in`, and a BYOK/third-party call shows the channel that served it.
 
-**Every tab lists the union of "ever used" and "installed", keyed by name, sorted
-by call count.** An installed-but-unused plugin still shows with `uses = 0`; a
-removed one keeps its history.
+**Entity tabs default to the rows used in their window — the same boundary the
+Tokens tab has always had.** Press <kbd>a</kbd> to switch to the installed ∪
+ever-used set (the filter note says how many rows are hidden); Plugins is always
+the full install ledger. Tokens and Usage are ranked by **usage total, then
+credits**; Top tools and Top commands by call count.
 
 A table never shows a half column: each table keeps the longest **prefix** of its
 columns that fits and names the dropped ones on the note line above it, so a
@@ -166,27 +166,15 @@ export QODERCN_EXPOSE_TOKEN_USAGE=1
   cache-creation tokens; credits may be present in the same row. BYOK routes report
   tokens either way and never a `credits` field.
 - **Past calls cannot be repaired.** The transcripts already hold zeros and are never
-  rewritten, so qcut reports those rows as `credits-only` and keeps them visible. The
-  share of requests carrying a real token is the **coverage** figure shown by the
-  Dashboard, Usage, Tokens, `qcut stats` and `qcut env` — a share of *requests*, never
-  of token volume.
-- **Capture began at one moment, and the index says so.** The Tokens tab, `qcut stats`,
-  `qcut env` and the Dashboard split the index at the **first token-covered call**:
-  requests before it are credits-only and structurally unrecoverable; requests since it
-  show the coverage capture actually achieves. That split timestamp is a fact about the
-  whole index, not about the selected window.
+  rewritten. Those rows keep their credits, and their token cells read `—` — never a
+  measured `0`. There is no coverage percentage or capture-boundary ledger: the index
+  simply shows what each row reported.
 
 qcut never edits `~/.qoder-cn`, your shell profile, or the CLI's environment.
 `qcut env` is a read-only advisor: it names the variable, reports whether it is set,
-prints the exact line to add, and shows the index's current coverage. It works with an
-absent database and does not create one. No token number is ever derived from credits,
-a context ratio, or anything else.
-
-Measured on this machine (2026-10-21, after a full reindex): **41,233 requests — 660
-token-covered (1.6%), 40,573 credits-only, 0 unmeasured**. The first token-covered call
-is at **2026-10-07 08:17**; **13,844** requests predate it and cannot be recovered, while
-**2.4% (660/27,389)** of the requests since it carry a token. Every request is in exactly
-one state, and the three counts sum to the request total.
+and prints the exact line to add. It works with an absent database and does not
+create one. No token number is ever derived from credits, a context ratio, or
+anything else.
 
 ## 💳 Credits vs tokens
 
@@ -208,10 +196,10 @@ one measure. qcut stores exactly what was reported and draws the difference:
   route-level zero, never evidence that nothing was used;
 - `-` means the value is absent, or there is nothing in this window.
 
-The Tokens tab's `Coverage` column is the same fact as those dashes, expressed as a
-share: a mixed model shows its partial token sum *beside* a partial coverage figure, so
-the sum cannot be mistaken for the whole. The per-call detail names its row's state as
-`token-covered`, `credits-only` or `unmeasured`.
+A mixed table can therefore hold both kinds of row at once: the measured cells stay
+numerals and the route-level zeros become `—` beside them. Usage Total is a display
+re-add of the cache hit (already part of Input), shown next to API Total rather than
+instead of it.
 
 **No estimation, no conversion:** tokens are never derived from credits or from a
 context ratio, and credits are never derived from tokens. History can be reviewed but
@@ -244,7 +232,7 @@ qcut sync             # build the index from your existing Qoder CN transcripts
 qcut                  # launch the TUI
 ```
 
-> **Upgrading an existing index?** Schema v2 adds the agent-run links (`parent_call_id`, `agent_id`) and the `compactions` table. An incremental `qcut sync` only reads new bytes, so run **`qcut sync --full` once** after upgrading; it snapshots the old index first. Fresh installs already get v2 and need no extra step.
+> **Upgrading an existing index?** Schema v3 repairs v2's command, skill-name and direct-MCP rows in place the first time the index is opened. The v2 agent-run links (`parent_call_id`, `agent_id`) still backfill only from a full read, so run **`qcut sync --full` once** after upgrading from an older index; it snapshots the old one first. Fresh installs need no extra step.
 
 Prefer no venv? The headless reports work with plain `python3`:
 
@@ -275,10 +263,10 @@ qcut                     # 🖥️  interactive TUI (eight tabs)
 qcut sync                # 🔄  incremental index of new transcript data
 qcut sync --full         # ♻️  rebuild the database from scratch (also backfills a v2 upgrade)
 qcut stats               # 📊  overview of all categories
-qcut tools|skills|plugins|mcp
-qcut agents              # 🤖  per-type run cost ledger
+qcut tools|skills|plugins|mcp [--all]   # used rows; --all = installed ∪ ever used
+qcut agents [--all]      # 🤖  per-type run cost ledger
 qcut projects [PATH]     # 📁  project board; PATH drills into its sessions
-qcut models              # 🔢  per-model tokens, credits and coverage
+qcut models              # 🔢  per-model usage total, tokens and credits
 qcut commands            # ⌨️   slash-command usage, ranked by calls
 qcut env                 # 🔑  the token-capture flag, read-only advice
 qcut show tool Bash      # 🔍  calls for one entity; rc 1 if the index never saw it
@@ -306,7 +294,7 @@ Every knob has the value the app already shipped with, and the file is optional:
 `~/.config/qcut/config.toml` — or point `QCUT_CONFIG` somewhere else:
 
 ```toml
-top_n = 5            # rows in the Dashboard's Top models / Top tools
+top_n = 5            # rows in the Dashboard's Top models / tools / commands
 log_limit = 100      # request rows on the Usage page
 detail_limit = 200   # rows on a history screen
 name_cap = 28        # widest cell a table renders before it cuts the value
@@ -340,7 +328,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 378 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 380 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -352,13 +340,13 @@ this repository reaches the network.
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 66 | transcript parsing, classification (tool / skill / agent / MCP), route origin, inventory, incremental and full re-sync, rewritten and unterminated tails, timestamped-status pairing, unparsed accounting, `model_calls` counted once per inserted row, the generated format document's token-capture section, idempotency across **every** table in the schema, a sidechain response linked to its launching run through Qoder's own `parent_tool_use_id`, `compact_boundary` metadata indexed without its prose, an unreadable transcript reported and retried, crash safety |
-| `test_usage.py` | 72 | the calendar-day windows, the provider label, cache hit rate, every query helper, the "installed ∪ used" union, the three-state coverage partition and its SQL↔Python mirror, provider- and tool-filtered history, slash-command ranking, entity existence kept apart from a quiet window, run cost aggregated only through explicit links, the project/session/request ladder, the compaction summary and its context tax, the capture timeline before-versus-since the first token-covered call, schemas (including the additive v1→v2 migration), the minimal snapshot→list→restore round trip, a fresh install with no database yet, and the headless reports' wording |
-| `test_stats.py` | 56 | the headless CLI end to end: real `main([...])` calls for every subcommand, `--db` and `--limit`, the read-only connection, the stale-index refusal, `export` / `inventory` / `recent` / `show` / `health`, the `agents` and `projects` ledgers (including a project that has never existed), the `commands` report, `env` with the flag set and unset, `vacuum` on a temp database (snapshot, `quick_check`, unchanged row totals), a malformed settings file reported as a message rather than a traceback, the `backup`/`restore` pair, `format --write` splicing between the markers and **refusing** to append into a document that lost them, a name `show` has never seen refused instead of drawn as zeros, the span the index actually covers, and the launcher refusing to touch a path it was not given |
+| `test_sync.py` | 68 | transcript parsing, classification (tool / skill / agent / MCP, including a direct `mcp__server__tool` tool name), route origin, inventory, incremental and full re-sync, rewritten and unterminated tails, timestamped-status pairing, unparsed accounting, `model_calls` counted once per inserted row, a Skill result's own `commandName` refused as a slash command, the generated format document's token-capture section, idempotency across **every** table in the schema, a sidechain response linked to its launching run through Qoder's own `parent_tool_use_id`, `compact_boundary` metadata indexed without its prose, an unreadable transcript reported and retried, crash safety |
+| `test_usage.py` | 72 | the calendar-day windows, the provider label, cache hit rate, every query helper, the "installed ∪ used" union, the token flag that still separates measured rows from legacy zeros, provider- and tool-filtered history, slash-command ranking, entity existence kept apart from a quiet window, run cost aggregated only through explicit links, the project/session/request ladder, the compaction summary and its context tax, schemas (including the additive v1→v2 migration and the v3 command/skill/MCP repair), the minimal snapshot→list→restore round trip, a fresh install with no database yet, and the headless reports' wording |
+| `test_stats.py` | 56 | the headless CLI end to end: real `main([...])` calls for every subcommand, `--db`, `--limit` and `--all`, the read-only connection, the stale-index refusal, `export` / `inventory` / `recent` / `show` / `health`, the `agents` and `projects` ledgers (including a project that has never existed), the `commands` report, `env` with the flag set and unset, `vacuum` on a temp database (snapshot, `quick_check`, unchanged row totals), a malformed settings file reported as a message rather than a traceback, the `backup`/`restore` pair, `format --write` splicing between the markers and **refusing** to append into a document that lost them, a name `show` has never seen refused instead of drawn as zeros, the span the index actually covers, and the launcher refusing to touch a path it was not given |
 | `test_snapshots.py` | 14 | the destructive step's way back: the snapshot is taken *before* the change, it is an online backup rather than a byte copy of a file whose committed rows are still in the `-wal`, a restore keeps the state it overwrote, retention prunes only what it made, and an index whose offsets were lost is still worth a snapshot |
 | `test_config.py` | 19 | the settings layer: defaults, file, environment precedence and bounds, a broken file that names its path, the keys `qcut health` prints, and that **every declared knob has a renderer that reads it** — a setting the user can edit for no effect is the failure this pins |
 | `test_privacy.py` | 15 | an **allowlist** of each production script's whole import surface — plus the two things a list of imports cannot see: a call reached through a module that is already declared (`os.system`) and a module named in a string — a fingerprint proving the source tree is untouched, a sentinel scan across every text column, and a positive control for each |
-| `test_tui.py` | 65 | tab wiring through Textual's own `run_test` harness, the resize axis (`on_resize` re-plans every table; a narrow plan is a prefix of its registry and names what it hid; rows and row *keys* survive the rebuild), click cadence (two `pilot.click` lines with no pause between them are a race the runner wins or loses), per-tab ranges, the Plugins tab's missing window, the column plan, empty states, drill-down including provider-scoped Tokens and server+tool MCP routing, the agent-type → run-history → responses ladder, the Dashboard project → session → requests ladder (and the NULL project as its own group), the coverage panels and per-call token state, the capture-timeline and compaction notes, the `—`/`-`/number distinction on both measure axes, the plain tab titles and the default canvas colour, which screen owns the rows of which table, the cbut-shaped date picker (six shortcut chips, roomy 79×30 geometry, scroll on a short terminal), and the status line as it is **actually rendered** |
+| `test_tui.py` | 65 | tab wiring through Textual's own `run_test` harness, the resize axis (`on_resize` re-plans every table; a narrow plan is a prefix of its registry and names what it hid; rows and row *keys* survive the rebuild), click cadence (two `pilot.click` lines with no pause between them are a race the runner wins or loses), per-tab ranges, the Plugins tab's missing window, the column plan, empty states, the used-only default and the `a` switch to installed ∪ ever-used, drill-down including provider-scoped Tokens and server+tool MCP routing, the agent-type → run-history → responses ladder, the Dashboard project → session → requests ladder (and the NULL project as its own group), the per-row `—`/`-`/number distinction on both measure axes, the compaction notes, the plain tab titles and the default canvas colour, which screen owns the rows of which table, the cbut-shaped date picker (six shortcut chips, roomy 79×30 geometry, scroll on a short terminal), and the status line as it is **actually rendered** |
 | `test_dispatcher.py` | 9 | `bin/qcut` routing, flag pass-through, and the failure modes that are the reason it is bash |
 | `test_format_registry.py` | 10 | an AST mirror of the format registry against the parser beside it: every field read is registered, every registered field is still read, the dispatch chain and the registry claim the same record types, and no separator, path segment or tool name is typed at a call site |
 | `test_maintenance_docs.py` | 11 | the generated format document equals what `qcut format` prints today, every maintenance asset is reachable from the router, every link resolves, and the CI matrix pins the floor `pyproject.toml` actually declares |
@@ -383,7 +371,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 378 tests above |
+| `scripts/tests/` | the 380 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
@@ -399,10 +387,10 @@ Both paths are overridable for a sandboxed install: `QCUT_SCRIPTS` and
   one a plugin installs) is credited to that plugin; a plugin's own agents and
   commands are listed from its install directory but are **not** attributed from
   the transcripts, because Qoder does not record that attribution there.
-- 🔑 **Token coverage is low on a machine with a long pre-flag history.** Hosted
-  calls written without `QODERCN_EXPOSE_TOKEN_USAGE=1` stored zeros that cannot be
-  repaired; they stay visible as `credits-only` and are never estimated. Only calls
-  made after the flag is set carry hosted tokens — see
+- 🔑 **Legacy hosted calls stay dashed.** Calls written without
+  `QODERCN_EXPOSE_TOKEN_USAGE=1` stored zeros that cannot be repaired; their token
+  cells read `—` and are never estimated, while their credits remain real. Only
+  calls made after the flag is set carry hosted tokens — see
   [Token capture](#-token-capture).
 - ⏱️ **Three columns `cbut` has cannot exist here, and no placeholder is invented
   for them.** A model response carries one timestamp and no start/end pair,

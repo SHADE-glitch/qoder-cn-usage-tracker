@@ -36,9 +36,10 @@ shape — a passive reader over files the host already writes, the same eight ta
 the same order, per-tab calendar-day windows, name-keyed unions, two-level drill-downs.
 What is **not** copied is any category Qoder CN CLI does not record: per-request duration,
 HTTP status and money have no Qoder field, so they stay absent and the note says why.
-The Qoder-specific additions — credits beside tokens, the three-state token coverage,
-`Usage Total` beside `API Total`, cache read / miss / write — are this project's own and
-are first-class, not deviations to be sanded off for parity. When the two disagree, the
+The Qoder-specific additions — credits beside tokens, the `—`/`-` distinction for a
+route that reports no token, `Usage Total` beside `API Total`, cache read / miss /
+write — are this project's own and are first-class, not deviations to be sanded off
+for parity. When the two disagree, the
 source of truth is what Qoder's transcripts contain, never cbut's screen. The READMEs
 carry the user-facing version under "Relationship to cbut".
 
@@ -153,8 +154,8 @@ tool runs from a checkout, so the version only needs to move when a documented c
   `CMD_RE` keeps the name, the prose around it is dropped, and the scan runs over
   **user** records only, because a marker in an assistant block is the model
   quoting it, not running it (D-009). A third source, `toolUseResult.commandName`,
-  is a keyed field and needs no text at all; it is the only one measured on real
-  transcripts here.
+  is a keyed field and needs no text at all; it is read only on a non-Skill result,
+  because Qoder writes the skill's own name there on a Skill call.
   Enforced by `test_privacy.py::MetadataOnlyTest`, a sentinel fed into every slot
   the parser reads and scanned across **every text column of every table**, with a
   positive control so the scan cannot pass on a database that indexed nothing.
@@ -197,6 +198,10 @@ tool runs from a checkout, so the version only needs to move when a documented c
   `agent_id`) and `compactions` rows come from records an incremental run has no
   reason to revisit; existing rows stay NULL/empty until a full pass. That is why
   the upgrade note in both READMEs asks for one `qcut sync --full`.
+  **Schema v3 is an in-place data repair**, applied by `ensure_schema()` when it
+  opens a v1/v2 index: drop the false commands copied from Skill results, split
+  `<plugin>:<skill>` names, and move direct `mcp__server__tool` rows from builtin
+  tools into MCP. It is idempotent and needs no full pass.
 - **Route origin is read, never guessed.** `provider` comes from the model string
   (`qoder-custom-<id>/<model>`) plus the configured `baseUrl` host. It is never
   inferred from the model *name*: a BYOK alias can look built-in (`qcfmodel`
@@ -221,28 +226,17 @@ tool runs from a checkout, so the version only needs to move when a documented c
   which are prose. `compacted_tokens = max(pre - post, 0)` is a display measure of
   context dropped; it is shown **beside** token totals and never added to them. A
   duplicate boundary is `INSERT OR IGNORE`d, and missing metadata is not fabricated.
-- **The capture split is a fact about the index, not the window.** `q_capture_timeline`
-  takes its split timestamp from the first token-covered request across the whole
-  index; the window filters the counts on each side, never the timestamp. Otherwise a
-  quiet window would claim capture began inside it. `qcut stats`, `qcut env`, the
-  Tokens note and the Dashboard all read this one function.
-- **Every request is in exactly one coverage state.** `token-covered` = at least
-  one token field > 0; `credits-only` = no token > 0 and `credits IS NOT NULL`;
-  `unmeasured` = no token > 0 and `credits IS NULL`. They partition the requests:
-  `token_covered + credits_only + unmeasured = requests`. `token_coverage(covered,
-  requests)` is a share of **requests**, never of token volume, and is `None` for
-  an empty window. One SQL expression family (`_TOKEN_COVERED_EXPR` and its three
-  aggregate wrappers) and one Python predicate (`row_reports_tokens`) drive every
-  surface; `q_usage_kpi`, `q_usage_summary`, `q_models` and `q_entity_summary`
-  all carry the three counts so no surface can invent a fourth version.
+- **Coverage tracking was removed on purpose.** There is no capture boundary, no
+  coverage percentage, and no `credits-only` / `unmeasured` partition. The owner
+  runs every future CLI call with the token flag, so the old ledger described
+  history rather than the tool. Do not reintroduce it without a request;
+  `token_covered` survives only as the predicate that decides a `—`.
 - **A route-level zero is drawn `—`, an absent value `-`, and a non-zero is always
   shown.** Storage keeps the 0 (the rule above); the *display* must not present it
   as a measurement — a window of only legacy hosted responses sums to `0` input
   tokens while billing real credits, and printing that `0` claims "used nothing".
-  The `—` decision is `token_covered > 0` at aggregate level (so a mixed model
-  shows its partial sum **and** a coverage figure) and `row_reports_tokens` per
-  row; the `Coverage` column is the same predicate as a share, so the column and
-  the dashes cannot tell two stories. The credits axis has the mirror predicate
+  The `—` decision is `token_covered > 0` at aggregate level and
+  `row_reports_tokens` per row. The credits axis has the mirror predicate
   (`credits_carried`): summing a route that never carried the field gives `0`,
   which reads "billed nothing" and should read `-`. Both renderers guard on the
   value too (`not reported and not value`), so a wrong flag can suppress a zero
@@ -258,9 +252,9 @@ tool runs from a checkout, so the version only needs to move when a documented c
 - **qcut never edits a shell profile or the CLI's environment.** The capture flag
   is read by the Qoder CN CLI process, not by qcut, so setting it from inside qcut
   would be too late and out of bounds. `qcut env` is a read-only advisor: it
-  names `db.TOKEN_ENV_NAME`, reports the current process state, prints the exact
-  line to add, and shows the index's coverage. It works with an absent database
-  and must not create one. `install.sh` does not touch profiles either.
+  names `db.TOKEN_ENV_NAME`, reports the current process state, and prints the
+  exact line to add. It works with an absent database and must not create one.
+  `install.sh` does not touch profiles either.
 - **"No such thing" and "nothing in this window" are different answers.** An
   aggregate over `WHERE name = ?` cannot tell them apart — both return
   `COUNT(*) = 0`, so an unknown entity printed as a confident report about something
@@ -275,17 +269,16 @@ tool runs from a checkout, so the version only needs to move when a documented c
   never ships an empty panel: an empty token panel reads as "0 tokens" or as a broken
   widget, and neither is true. Where a slot's meaning is narrower here than in the
   sibling, the note line above the table says so in the same round —
-  `Tokens` reports **credits**, a `Coverage` share and the tokens a route actually
-  carried (a BYOK route carries no `credits` field at all, so it is stored NULL, not
-  0), and `Usage` is per-response only where a response was recorded; its `—` means
-  that call reported no token, and its note says credits and tokens can coexist and
-  points at `qcut env`. Both tables carry **one** `Provider` column: `Built-in` for
-  Qoder's own route, otherwise the stored BYOK channel name. A second one-word `Route`
-  column is gone — it repeated the family and cost the width that made the table drop
-  its tail on a normal terminal. The Tokens `Coverage` cell is a bare share; its note
-  line carries the definition and the window's `token-covered / credits-only /
-  unmeasured` counts, so a partial token sum still cannot read as a total. The caveat
-  is part of the contract; delete it and the panel starts lying.
+  `Tokens` reports **credits** and the tokens a route actually carried (a BYOK
+  route carries no `credits` field at all, so it is stored NULL, not 0), and
+  `Usage` is per-response only where a response was recorded; its `—` means that
+  call reported no token, and its note says credits and tokens can coexist. Both
+  tables carry **one** `Provider` column: `Built-in` for Qoder's own route,
+  otherwise the stored BYOK channel name. A second one-word `Route` column is gone
+  — it repeated the family and cost the width that made the table drop its tail on
+  a normal terminal. Usage Total leads the measure family, then credits; the
+  caveat that a legacy sum only describes the rows that reported a token is part of
+  the contract; delete it and the panel starts lying.
   The *set* is machine-checked too, and against literals rather than against
   `TABS`: `scripts/qcut-tui.py` builds its panes in a loop over that tuple, so
   comparing the built panes back to it holds for any tab set at all — including
@@ -295,11 +288,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
   importable from here, so this is the only place in the suite where the family
   contract is read; label text comes from the tab bar (`tc.get_tab(id).label_text`),
   because `TabPane` carries no label in Textual 8.2.8.
-- **Name is the primary key of every panel.** Each tab lists the union of what is
+- **Name is the primary key of every panel.** An entity tab defaults to what its
+  window actually used, matching Tokens; `a` switches it to the union of what is
   installed (the static `inventory`) and what has *ever been used* (the usage
-  tables), keyed by name alone, sorted by call count. Under a time window only the
-  counts shrink — the list stays full. Add a new panel by name, never by a
-  per-run surrogate id.
+  tables). Both views are keyed by name alone. Add a new panel by name, never by a
+  per-run surrogate id; the headless reports expose the same switch as `--all`.
 - **Windows are whole local calendar days, not "now minus N hours".**
   `window_bounds` starts at local 00:00 and ends at the current time; each tab
   keeps its own window (`DEFAULT_RANGES`). Do not switch to rolling hours or a
@@ -344,9 +337,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
   and `test_a_short_terminal_scrolls_the_picker_instead_of_crushing_it`.
 - **A flag is registered only where a command reads it.** `--limit` belongs to the
   eight reports that pass it to a query (`tools`, `skills`, `agents`, `mcp`,
-  `projects`, `commands`, `recent`, `show`), and `--range` only to `show` and
-  `projects`, the two commands with a window argument. A flag the parser accepts
-  and the report ignores reads as a filter that worked.
+  `projects`, `commands`, `recent`, `show`), `--all` only to the four entity
+  reports that can widen to installed ∪ ever-used (`tools`, `skills`, `agents`,
+  `mcp`), and `--range` only to `show` and `projects`, the two commands with a
+  window argument. A flag the parser accepts and the report ignores reads as a
+  filter that worked.
 - **Settings are read once, in one place.** `db.load_config()` resolves
   environment > file > `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`,
   one in `ENV_NAMES`, one in `_BOUNDS`, and one assignment where the value is
@@ -486,12 +481,11 @@ Re-measure before restating any of these; the commands are in
   `Usage Total` is shown *beside* `API Total` and never instead of it.
 - 444 of 489 transcript files are `agent-a<Type>-<hash>.jsonl` subagent
   transcripts carrying the parent session id.
-- Coverage on the legacy index is **71 token-covered, 40,473 credits-only, 0
-  unmeasured of 40,544 requests** (0.2%): every hosted call predates the capture
-  flag, and the 71 are one BYOK route. Zero rows carry both credits and tokens
-  *here*, but that is history — the flag makes coexistence the normal shape for a
-  new hosted call. Re-measure with `qcut stats` / `qcut models` rather than
-  quoting these.
+- On the legacy index most hosted calls predate the token flag, so their token
+  cells read `—` while their credits are real; only a small BYOK slice measured
+  tokens. The flag makes coexistence the normal shape for a new hosted call.
+  Re-measure with `qcut stats` / `qcut models` rather than quoting a count; the
+  coverage ledger that used to report this was removed by request.
 
 ## Listed on the GitHub profile
 
@@ -520,10 +514,10 @@ wrong here, and misses one:
 
 - **The product name is part of the promise.** "CodeBuddy Code" in a Qoder repository's About is a
   copy-paste slip a reader cannot resolve.
-- **"credits vs tokens" is not decoration.** 40,473 responses on this machine carry a real credit and
-  a literal `0` in all four token fields; only 71 carry real tokens. An About that says only "token
-  analytics" describes a fraction of the index, so it must pair tokens with the coverage figure (or
-  name credits too) rather than imply every call is measured.
+- **"credits vs tokens" is not decoration.** Most legacy hosted responses on this machine carry a
+  real credit and a literal `0` in all four token fields. An About that says only "token analytics"
+  describes a fraction of the index, so it must name credits too (and the `—` that marks an
+  unreported token) rather than imply every call is measured.
 - **What *may* be copied** is the strongest true claim here: this repository really does store
   metadata only — `test_privacy.py::MetadataOnlyTest` scans sentinels across every text column of
   every table — so "no message bodies" is true, and worth saying.

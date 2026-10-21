@@ -69,6 +69,10 @@ between "all time" and a claim that can be checked: at this snapshot it read
 | `sync_state` | 492 |
 | `unparsed` | 1 reason, 6 lines |
 
+The `commands` row was **5 before schema v3**: those five names came from Skill
+results, not slash commands, and the v3 repair removes them (the repaired index
+reports 0). Everything else in this table is the pre-v3 snapshot.
+
 `model_calls` is 41,233 of the 95,328 `assistant` records on disk: the rest carry
 no `message.usage` and are not model responses. A separate scan moments after the
 index counted 41,244 usage records — this session writes transcripts while it is
@@ -93,37 +97,30 @@ the AI-written title) is now in `NOOP_RECORD_TYPES` — claimed and dropped, wit
 sentinel case proving the title is not read — so a genuinely new type still shows
 up here as a new reason, and that is the point of the table.
 
-## Route split — coverage, not complementarity
+## Route split — tokens and credits are not complements
 
 ```bash
 qcut models
 ```
 
-| model | provider | requests | coverage | input | output | API | cache read | credits |
-|---|---|---|---:|---:|---:|---:|---:|---:|
-| `qfmodel` | Built-in | 38,031 | 0.1% (36/38,031) | 1,834,621 | 31,068 | 1,865,689 | 1,765,702 | 21,687.46 |
-| `qmodel_38max` | Built-in | 1,985 | 0.0% (0/1,985) | `—` | `—` | `—` | `—` | 5,932.63 |
-| `dfmodel` | Built-in | 1,134 | 48.8% (553/1,134) | 60,566,316 | 336,303 | 60,902,619 | 59,805,312 | 254.32 |
-| `qmodel` | Built-in | 11 | 0.0% (0/11) | `—` | `—` | `—` | `—` | 6.78 |
-| `auto` | Built-in | 1 | 0.0% (0/1) | `—` | `—` | `—` | `—` | 1.31 |
-| `ark-code-latest` | Volcano ARK | 71 | 100.0% (71/71) | 12,992,235 | 53,096 | 13,045,331 | 11,740,032 | `-` (no field) |
+| model | provider | requests | input | output | API | cache read | credits |
+|---|---|---|---:|---:|---:|---:|---:|
+| `qfmodel` | Built-in | 38,031 | 1,834,621 | 31,068 | 1,865,689 | 1,765,702 | 21,687.46 |
+| `qmodel_38max` | Built-in | 1,985 | `—` | `—` | `—` | `—` | 5,932.63 |
+| `dfmodel` | Built-in | 1,134 | 60,566,316 | 336,303 | 60,902,619 | 59,805,312 | 254.32 |
+| `qmodel` | Built-in | 11 | `—` | `—` | `—` | `—` | 6.78 |
+| `auto` | Built-in | 1 | `—` | `—` | `—` | `—` | 1.31 |
+| `ark-code-latest` | Volcano ARK | 71 | 12,992,235 | 53,096 | 13,045,331 | 11,740,032 | `-` (no field) |
 
-The three-state partition, read off `qcut stats`:
-
-| state | requests |
-|---|---:|
-| token-covered (at least one token field > 0) | 660 |
-| credits-only (no token > 0, `credits` present) | 40,573 |
-| unmeasured (no token > 0, `credits` NULL) | 0 |
-| **total** | **41,233** |
-
-The three shapes coexist on this index. 589 of the 660 token-covered rows carry
-credits as well — a Qoder-hosted response with `QODERCN_EXPOSE_TOKEN_USAGE=1`
-records real tokens **and** credits in the same row. The 71 BYOK rows are the
-opposite shape: tokens and no `credits` field at all, stored NULL. The remaining
-40,573 hosted rows reported no non-zero token — mostly calls written without the
-flag, with a literal 0 in every token field plus credits, irrecoverable by qcut.
-Storing what was written is what makes the partition exact instead of guessed.
+At this snapshot 660 rows reported at least one non-zero token and 40,573 did not;
+most of the latter were hosted calls written without the flag, with a literal 0 in
+every token field plus real credits. They are irrecoverable by qcut and are drawn
+`—`. The coverage percentages that used to be printed were removed by request; the
+underlying rows are unchanged, and a mixed model still shows its measured cells
+beside the dashed ones. 589 of the 660 token-covered rows carried credits too — a
+hosted response with `QODERCN_EXPOSE_TOKEN_USAGE=1` records tokens **and** credits
+in one row. The 71 BYOK rows are the opposite shape: tokens and no `credits` field
+at all, stored NULL.
 
 The display keeps three marks because the storage keeps three facts: `-` nothing
 contributed to this number, `—` a call (or aggregate of calls) that reported no
@@ -160,8 +157,9 @@ Status split across all 46,963 calls: 45,110 `completed`, 1,560 `error`, 264
 
 Subagent types: 391 `general-purpose`, 97 `Explore`, 29 `Plan`.
 MCP: 18 calls across 3 servers — `node-repl` 5, `builtin` 8, a QMind plugin server
-2, and 3 admin rows with no server or tool. Slash commands: 5 distinct names, one
-call each.
+2, and 3 admin rows with no server or tool. The 5 “slash commands” this snapshot
+once reported were Skill results naming their own skill; schema v3 drops them, so
+the repaired index has **0** commands.
 
 Separately, of the 46,928 records that carry a `toolUseResult` dict, **20,298 have
 no `kind`** — more than a third. Treating those as unfinished would report
@@ -176,7 +174,7 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 | suite | cases |
 |---|---:|
 | `test_usage.py` | 72 |
-| `test_sync.py` | 66 |
+| `test_sync.py` | 68 |
 | `test_tui.py` | 65 |
 | `test_stats.py` | 56 |
 | `test_config.py` | 19 |
@@ -190,22 +188,22 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
 | `test_conventions.py` | 9 |
-| **total** | **378** |
+| **total** | **380** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is the bulk of
 the run, the other fourteen together a few seconds.
 
 The suite was green on all three interpreters at the 310-case snapshot, with
 `textual 8.2.8` installed in each — that pair is what the CI matrix pins (floor
-from `requires-python`, plus the highest version measured). The 378-case suite has
+from `requires-python`, plus the highest version measured). The 380-case suite has
 now been re-run locally on 3.13 and 3.14; CI remains the record for the 3.11 end
 until it is re-measured here:
 
 | interpreter | result |
 |---|---|
-| Python 3.11.15 | 310 OK (2026-10-12); CI is the record for 378 |
-| Python 3.13.14 (the `install.sh` venv) | 378 OK (2026-10-21), 167 s |
-| Python 3.14.4 | 378 OK (2026-10-21), 141 s |
+| Python 3.11.15 | 310 OK (2026-10-12); CI is the record for 380 |
+| Python 3.13.14 (the `install.sh` venv) | 380 OK (2026-10-21), 166 s |
+| Python 3.14.4 | 380 OK (2026-10-21), 205 s |
 
 `test_config.py` and `test_tui.py` need `textual`; the other thirteen are
 stdlib-only.

@@ -105,11 +105,14 @@ COMPACT_SUBTYPE = "compact_boundary"
 # Tools observed in the transcripts on this machine (2026-10-12). Anything not
 # Skill/Agent/mcp/meta is a builtin tool even if absent here — the set only
 # powers the "available" view and the inventory rows.
+# The Tools tab and inventory are *builtin* tools. Skill and Agent invocations
+# have their own tabs and ledgers, so listing them here too made one call appear
+# twice and made the Dashboard's tool count overlap every specialised count.
 BUILTIN_TOOLS = {
     "Bash", "Edit", "Read", "Write", "Grep", "Glob", "NotebookEdit", "MultiEdit",
     "WebFetch", "WebSearch", "SearchKnowledge", "TaskCreate", "TaskGet",
     "TaskUpdate", "TaskList", "TaskStop", "TaskOutput", "AskUserQuestion",
-    "EnterPlanMode", "ExitPlanMode", "Skill", "Agent",
+    "EnterPlanMode", "ExitPlanMode",
 }
 
 # The Agent tool's own contract: when the caller omits ``subagent_type`` the
@@ -227,6 +230,9 @@ QCUT_INTERNAL_KEYS = frozenset({
     "skill_owner",
     "file_path", "offset", "size", "mtime",
     "counts", "seconds", "db",
+    # The tool_calls column read back to tell a Skill's own `commandName` from a
+    # real slash command; it is qcut's schema, not a Qoder record field.
+    "category",
 })
 
 
@@ -323,7 +329,13 @@ def resolve_route(model_raw, custom_provider_id, providers):
 
 
 def _classify(name: str, args: dict):
-    """``(category, payload)`` for one tool_use block."""
+    """``(category, payload)`` for one tool_use block.
+
+    Qoder's usual MCP shape is ``mcp_call`` with the target in an argument, but
+    older records also carry the direct ``mcp__<server>__<tool>`` tool name. Both
+    are the same call and both belong to the MCP ledger; treating the direct form
+    as a builtin tool made it disappear from MCP and appear on Tools.
+    """
     if name == SKILL_TOOL:
         skill = args.get("skill") or args.get("command") or ""
         return "skill", skill
@@ -332,6 +344,8 @@ def _classify(name: str, args: dict):
     if name in MCP_TOOLS:
         target = args.get("toolName") or args.get("tool_name") or ""
         return "mcp_tool", (MCP_TOOLS[name], target)
+    if isinstance(name, str) and name.startswith(MCP_TARGET_PREFIX):
+        return "mcp_tool", ("call", name)
     return "builtin", None
 
 
@@ -589,10 +603,13 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
     _bump(counts, "tool_calls")
 
     if category == "skill":
-        skill = payload or ""
+        reported = payload or ""
         plugin = None
-        if ":" in skill:
-            plugin = skill.split(SKILL_PLUGIN_SEP, 1)[0]
+        skill = reported
+        if SKILL_PLUGIN_SEP in reported:
+            prefix, _, bare = reported.partition(SKILL_PLUGIN_SEP)
+            if prefix and bare:
+                plugin, skill = prefix, bare
         plugin = plugin or skill_owner.get(skill)
         conn.execute(
             "INSERT OR IGNORE INTO skill_usage"
@@ -627,7 +644,7 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
         _bump(counts, "mcp_calls")
 
 
-def _record_tool_result(conn, rec, block, ts, counts) -> None:
+def _record_tool_result(conn, rec, block, ts, project, counts) -> None:
     call_id = block.get("tool_use_id")
     if not call_id:
         return
@@ -666,9 +683,17 @@ def _record_tool_result(conn, rec, block, ts, counts) -> None:
     _bump(counts, "tool_results")
     command = meta.get("commandName")
     if isinstance(command, str) and command:
-        conn.execute(
-            "INSERT OR IGNORE INTO commands(command, session_id, project, ts)"
-            " VALUES(?,?,?,?)", (command, rec.get("sessionId"), None, ts))
+        # Qoder writes the *skill's own name* into `commandName` on a Skill
+        # result. That is not a slash-command invocation, and recording it made
+        # the Commands report a mirror of Skills (five of five on the owner's
+        # index). A commandName on any other tool is still a real signal.
+        call = conn.execute(
+            "SELECT category FROM tool_calls WHERE call_id = ?", (call_id,)
+        ).fetchone()
+        if call is not None and call["category"] != "skill":
+            conn.execute(
+                "INSERT OR IGNORE INTO commands(command, session_id, project, ts)"
+                " VALUES(?,?,?,?)", (command, rec.get("sessionId"), project, ts))
 
 
 def _record_commands(conn, rec, msg, ts, project, counts) -> None:
@@ -725,7 +750,7 @@ def _handle_record(conn, rec, providers, skill_owner, fallback_project, counts) 
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
-                    _record_tool_result(conn, rec, block, ts, counts)
+                    _record_tool_result(conn, rec, block, ts, project, counts)
         _record_commands(conn, rec, msg, ts, project, counts)
     elif rtype == "system":
         if rec.get("subtype") == COMPACT_SUBTYPE:
@@ -911,7 +936,10 @@ def format_doc() -> str:
         f"- agent tool: `{AGENT_TOOL}` (arguments `subagent_type`, `agent_type`"
         f"; default `{DEFAULT_AGENT_TYPE}`)",
         "- mcp tools: " + ", ".join(f"`{k}` -> {v}" for k, v in sorted(MCP_TOOLS.items())),
-        f"- mcp target: `{MCP_TARGET_PREFIX}<server>{MCP_TARGET_SEP}<tool>` in the `toolName` argument",
+        f"- mcp target: `{MCP_TARGET_PREFIX}<server>{MCP_TARGET_SEP}<tool>` in the `toolName` argument,",
+        f"  or used directly as the tool name (older records); both are a `call`",
+        f"- skill name: `<plugin>{SKILL_PLUGIN_SEP}<skill>` is stored as the bare skill"
+        " with `plugin` split out",
         f"- custom route: `<providerId>{PROVIDER_MODEL_SEP}<model>`, prefix `{CUSTOM_PROVIDER_PREFIX}`",
         "",
     ]

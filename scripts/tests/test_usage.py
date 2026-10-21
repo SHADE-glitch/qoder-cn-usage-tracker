@@ -147,9 +147,10 @@ class CacheMissDerivationTest(unittest.TestCase):
         self.assertEqual(summary["cache_hit"], 1300)
         self.assertEqual(summary["cache_miss"], 200)
         self.assertEqual(summary["requests"], 3)
-        # A route that reported no tokens at all is counted, not invented.
-        self.assertEqual(summary["missing_input"], 1)
-        self.assertEqual(summary["missing_output"], 1)
+        # The summary no longer carries per-field missing counters; the dash
+        # in the panels is driven by `token_covered` alone.
+        self.assertNotIn("missing_input", summary)
+        self.assertNotIn("missing_output", summary)
 
     def test_the_request_log_carries_the_derived_miss_per_row(self):
         conn = self.t.conn()
@@ -279,12 +280,12 @@ class TokenReportingTest(unittest.TestCase):
         self.assertEqual(counts["kpi"], 1)
         self.assertEqual(counts["models"], {"qfmodel": 0, "ark": 1})
 
-    def test_the_three_states_partition_every_request(self):
+    def test_the_token_flag_still_separates_measured_from_legacy_rows(self):
         """Legacy hosted, hosted-with-flag, and BYOK in one window.
 
-        The three counts are a partition, not flags: every request lands in
-        exactly one, whatever mix of credits and tokens it carried. Tokens and
-        credits coexist on `hosted`; the BYOK row has no credits field at all.
+        Coverage percentages are gone, but ``token_covered`` still decides
+        whether a structural zero is drawn as ``—``; the one legacy row must not
+        be counted as a route that reported a token.
         """
         self.insert_providers(
             ("legacy", "qfmodel", "builtin", 0, 0, 0, 0, 5.0),
@@ -300,21 +301,13 @@ class TokenReportingTest(unittest.TestCase):
         for data in (kpi, summary):
             self.assertEqual(data["requests"], 3)
             self.assertEqual(data["token_covered"], 2)
-            self.assertEqual(data["credits_only"], 1)
-            self.assertEqual(data["unmeasured"], 0)
-            self.assertEqual(data["token_covered"] + data["credits_only"]
-                             + data["unmeasured"], data["requests"])
-            self.assertAlmostEqual(data["token_coverage"], 2 / 3)
         # The token sums cover only the measured requests; the credit sum
         # covers only the rows that carried credits. Neither is a total.
         self.assertEqual(kpi["input_tokens"], 220)
         self.assertEqual(kpi["output_tokens"], 34)
         self.assertEqual(kpi["credits"], 6.0)
         self.assertEqual(rows[("qfmodel", "builtin")]["token_covered"], 1)
-        self.assertEqual(rows[("qfmodel", "builtin")]["credits_only"], 1)
-        self.assertEqual(rows[("qfmodel", "builtin")]["unmeasured"], 0)
         self.assertEqual(rows[("ark", "Volcano ARK")]["token_covered"], 1)
-        self.assertEqual(rows[("ark", "Volcano ARK")]["credits_only"], 0)
 
     # --- the headless report renders the same decision ---------------------
 
@@ -338,31 +331,31 @@ class TokenReportingTest(unittest.TestCase):
         self.assertRegex(out, r"cache read tokens\s+—")
         # The money axis is a real measurement, so it stays a number.
         self.assertRegex(out, r"credits\s+5\.00")
-        self.assertRegex(out, r"token coverage\s+0\.0% \(0/1\)")
-        self.assertRegex(out, r"credits-only\s+1")
-        self.assertIn(db.TOKEN_ENV_NAME, out)
+        # Coverage statistics and the capture advice are gone from the report.
+        self.assertNotIn("coverage", out.lower())
+        self.assertNotIn("credits-only", out.lower())
+        self.assertNotIn(db.TOKEN_ENV_NAME, out)
 
     def test_stats_keeps_numbers_where_a_route_reported_tokens(self):
         self.insert(("m1", "ark", 100, 10, 80, 0, None))
         _, out = self._run(self.stats.cmd_stats, type("A", (), {})())
+        self.assertRegex(out, r"usage total\s+190")
         self.assertRegex(out, r"input tokens\s+100")
         self.assertRegex(out, r"output tokens\s+10")
         self.assertRegex(out, r"cache read tokens\s+80")
-        self.assertRegex(out, r"token coverage\s+100\.0% \(1/1\)")
         self.assertNotRegex(out, r"tokens\s+—")
-        self.assertNotIn("note:", out)
+        self.assertNotIn("coverage", out.lower())
 
     def test_an_empty_window_reports_no_measurement(self):
         # With no responses there is no route to describe: a NULL sum reads `-`,
         # not the `—` that says "this call answered in credits instead of
-        # tokens", and the capture note must not fire.
+        # tokens".
         _, out = self._run(self.stats.cmd_stats, type("A", (), {})())
         self.assertRegex(out, r"input tokens\s+-\n")
-        self.assertRegex(out, r"token coverage\s+-\n")
         self.assertNotRegex(out, r"tokens\s+—")
-        self.assertNotIn("note:", out)
+        self.assertNotIn("coverage", out.lower())
 
-    def test_models_show_partial_coverage_beside_a_partial_token_sum(self):
+    def test_models_keep_measured_cells_beside_legacy_dashes(self):
         self.insert(("m1", "qfmodel", 0, 0, 0, 0, 5.0),
                     ("m2", "qfmodel", 100, 10, 80, 0, 1.0),
                     ("m3", "ark", 0, 0, 0, 0, None))
@@ -371,14 +364,14 @@ class TokenReportingTest(unittest.TestCase):
         lines = {l.split()[0]: l for l in out.splitlines()
                  if l.strip().startswith(("qfmodel", "ark"))}
         self.assertEqual(len(lines), 2, out)
-        # A mixed model keeps the token it measured *and* the coverage that
-        # says it describes one of two requests.
-        self.assertIn("50.0% (1/2)", lines["qfmodel"])
+        # A mixed model keeps the token it measured; it no longer carries a
+        # percentage saying how many requests that sum describes.
+        self.assertNotIn("coverage", out.lower())
         self.assertIn("100", lines["qfmodel"])
         self.assertNotIn("—", lines["qfmodel"])
-        # A model with no measurement still shows its credits and a zero share.
-        self.assertIn("0.0% (0/1)", lines["ark"])
+        # A model with no measurement keeps its dashed tokens and credits.
         self.assertIn("—", lines["ark"])
+        self.assertIn(" - ", lines["ark"])
 
     def test_show_dashes_one_model_and_its_own_history_rows(self):
         self.insert(("m1", "qfmodel", 0, 0, 0, 0, 5.0),
@@ -387,12 +380,11 @@ class TokenReportingTest(unittest.TestCase):
                              "range": None})()
         code, out = self._run(self.stats.cmd_show, args)
         self.assertEqual(code, 0)
-        # Both halves of the screen: the window summary, which carries the
-        # `token_covered` count...
+        # The window summary dashes the token rows...
         self.assertRegex(out, r"input_tokens\s+—")
-        self.assertRegex(out, r"coverage\s+0\.0%")
-        # ...and the per-row history, which does not, so it must fall back to
-        # the row's own fields rather than print a structural zero.
+        self.assertNotIn("coverage", out.lower())
+        # ...and the per-row history falls back to each row's own fields rather
+        # than printing a structural zero.
         self.assertIn("input_tokens=—", out)
         self.assertNotRegex(out, r"input_tokens\s+0\b")
         # The money axis is a real measurement, so it stays a number.
@@ -453,8 +445,8 @@ class TokenReportingTest(unittest.TestCase):
         _, out = self._run(self.stats.cmd_models, type("A", (), {"limit": None})())
         row = [l for l in out.splitlines() if l.strip().startswith("ark")][0]
         # `-` (never billed in this unit) and not `0` (billed nothing). The
-        # credits column is last; the coverage column sits before the tokens.
-        self.assertTrue(row.rstrip().endswith("-"), row)
+        # row ends with Last used now; read the credits cell by its neighbours.
+        self.assertRegex(row, r"Built-in\s+190\s+-\s+1\s", row)
         self.assertNotRegex(row, r"\b0\.00\b")
 
     def test_stats_reports_an_unbilled_window_as_absent_credits(self):
@@ -548,8 +540,33 @@ class QueryTest(unittest.TestCase):
         self.assertEqual(rows[("qfmodel", "builtin")]["requests"], 2)
         self.assertEqual(rows[("qfmodel", "builtin")]["credits"], 7.0)
         self.assertEqual(rows[("qfmodel", "builtin")]["token_covered"], 0)
-        self.assertEqual(rows[("qfmodel", "builtin")]["credits_only"], 2)
+        self.assertNotIn("credits_only", rows[("qfmodel", "builtin")])
         self.assertEqual(rows[("ark-code-latest", "Volcano ARK")]["token_covered"], 1)
+
+    def test_runtime_counts_only_builtin_calls(self):
+        """Completed + Failed + Pending must equal the Dashboard's Tool calls.
+
+        A Skill/Agent/MCP row lives in `tool_calls` too; counting it here made
+        the Runtime panel add up to more than the KPI beside it.
+        """
+        conn = self.t.conn()
+        conn.executemany(
+            "INSERT INTO tool_calls(call_id, session_id, project, ts, tool_name,"
+            " category, duration_ms, status) VALUES(?,?,?,?,?,?,?,?)",
+            [("c9", "s1", "/a", ms_on(0), "Skill", "skill", 50, "completed"),
+             ("c10", "s1", "/a", ms_on(0), "Bash", "builtin", 10, "cancelled")])
+        conn.commit()
+        try:
+            act = db.q_usage_activity(conn)
+            kpi = db.q_usage_kpi(conn)
+        finally:
+            conn.close()
+        self.assertEqual(act["calls"], 4)
+        self.assertEqual(act["calls"], kpi["builtin_tool_calls"])
+        self.assertEqual(
+            act["completed"] + act["failed"] + act["pending"]
+            + act["backgrounded"] + act["cancelled"], act["calls"],
+            "the five Runtime statuses must partition the builtin calls")
 
     def test_a_server_less_mcp_row_is_not_dropped(self):
         """`m.server = p.server` is never true when both are NULL, which once
@@ -831,7 +848,7 @@ class CliReportTest(unittest.TestCase):
 
 
 class LedgerQueryTest(unittest.TestCase):
-    """Run cost, project/session ledgers, compactions and the capture split.
+    """Run cost, project/session ledgers and compactions.
 
     The links here are explicit `parent_call_id` values, because that is the only
     thing the queries are allowed to use; a seed that expected inference would
@@ -894,9 +911,9 @@ class LedgerQueryTest(unittest.TestCase):
             self.q(db.q_agents)[0]["credits"], 3.0,
             msg="an unlinked BYOK response changed a run's cost")
 
-    def test_a_run_drill_down_lists_its_own_responses(self):
+    def test_a_run_drill_down_lists_its_own_responses_newest_first(self):
         rows = self.q(db.q_agent_run_calls, "a1")
-        self.assertEqual([r["call_id"] for r in rows], ["m1", "m2"])
+        self.assertEqual([r["call_id"] for r in rows], ["m2", "m1"])
 
     def test_a_project_board_carries_cost_and_compaction_tax(self):
         rows = {r["project"]: r for r in self.q(db.q_project_board)}
@@ -930,9 +947,9 @@ class LedgerQueryTest(unittest.TestCase):
         self.assertEqual(rows[0]["peak_context"], 0.55)
         self.assertEqual(rows[0]["compactions"], 1)
 
-    def test_session_requests_name_the_launching_agent(self):
+    def test_session_requests_name_the_launching_agent_newest_first(self):
         rows = self.q(db.q_session_calls, "s1")
-        self.assertEqual([r["call_id"] for r in rows], ["m1", "m2"])
+        self.assertEqual([r["call_id"] for r in rows], ["m2", "m1"])
         self.assertEqual({r["agent_type"] for r in rows}, {"Explore"})
 
     def test_compaction_summary_splits_trigger_and_counts_context_dropped(self):
@@ -945,34 +962,16 @@ class LedgerQueryTest(unittest.TestCase):
         self.assertEqual(summary["peak_pre_tokens"], 1000)
         self.assertEqual(summary["avg_ms"], 6000)
 
-    def test_capture_timeline_splits_at_the_first_token_covered_call(self):
-        timeline = self.q(db.q_capture_timeline)
-        self.assertEqual(timeline["first_ts"], self.t0)
-        self.assertEqual(timeline["requests"], 4)
-        self.assertEqual(timeline["covered"], 2)
-        self.assertEqual(timeline["before_requests"], 0)
-        self.assertEqual(timeline["since_requests"], 4)
-        self.assertEqual(timeline["since_covered"], 2)
-        self.assertEqual(timeline["since_coverage"], 0.5)
-
-    def test_the_window_capture_split_counts_only_its_own_rows(self):
-        start, end = db.window_bounds("1d", ms_on(0, 23))
-        timeline = self.q(db.q_capture_timeline, start, end)
-        self.assertEqual(timeline["first_ts"], self.t0,
-                         "the split timestamp is a fact about the index, not "
-                         "the window")
-        self.assertEqual(timeline["requests"], 2)
-        self.assertEqual(timeline["before_requests"], 0)
-        self.assertEqual(timeline["since_requests"], 2)
-
     def test_kpi_surfaces_the_new_ledgers(self):
         kpi = self.q(db.q_usage_kpi)
         self.assertEqual(kpi["agent_requests"], 3)
         self.assertEqual(kpi["agent_credits"], 3.0)
+        self.assertEqual(kpi["agent_credits_carried"], 3)
         self.assertEqual(kpi["compactions"], 2)
         self.assertEqual(kpi["compacted_tokens"], 1600)
         self.assertEqual(kpi["peak_context"], 0.55)
-        self.assertEqual(kpi["first_token_ts"], self.t0)
+        self.assertNotIn("first_token_ts", kpi)
+        self.assertNotIn("token_coverage", kpi)
 
 
 class SchemaTest(unittest.TestCase):
@@ -1027,6 +1026,61 @@ class SchemaTest(unittest.TestCase):
             conn.commit()
             self.assertEqual(conn.execute(
                 "SELECT parent_call_id FROM model_calls").fetchone()[0], "a1")
+        finally:
+            conn.close()
+
+    def test_v3_repairs_commands_skill_names_and_direct_mcp(self):
+        """The three blind spots v2 wrote into real indexes.
+
+        A Skill result's `commandName` became a slash command, a
+        `<plugin>:<skill>` invocation stayed qualified, and a direct
+        `mcp__server__tool` call was counted as a builtin tool. The migration
+        repairs all three in place, without touching data v2 got right.
+        """
+        db.migrate(self.t.db_path)
+        conn = self.t.conn()
+        try:
+            conn.execute(
+                "INSERT INTO skill_usage(call_id, skill, plugin, session_id,"
+                " project, ts, status) VALUES('k1','qoder-context:knowledge-plan',"
+                " NULL,'s1','/a',1,'completed')")
+            conn.executemany(
+                "INSERT INTO commands(command, session_id, project, ts)"
+                " VALUES(?,?,?,?)",
+                [("knowledge-plan", "s1", "/a", 1),
+                 ("review", "s1", "/a", 2)])
+            conn.execute(
+                "INSERT INTO plugin_usage(plugin, kind, target, session_id,"
+                " project, ts) VALUES('qoder-context','skill',"
+                " 'qoder-context:knowledge-plan','s1','/a',1)")
+            conn.execute(
+                "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+                " category, ts, duration_ms, status) VALUES('c1','s1','/a',"
+                " 'mcp__srv__work','builtin',1,10,'completed')")
+            conn.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(db.migrate(self.t.db_path), "migrated")
+        conn = self.t.conn()
+        try:
+            self.assertEqual(
+                [r["command"] for r in conn.execute(
+                    "SELECT command FROM commands ORDER BY ts")],
+                ["review"], "the Skill result's commandName survived v3")
+            skill = conn.execute("SELECT skill, plugin FROM skill_usage").fetchone()
+            self.assertEqual((skill["skill"], skill["plugin"]),
+                             ("knowledge-plan", "qoder-context"))
+            target = conn.execute(
+                "SELECT target FROM plugin_usage").fetchone()["target"]
+            self.assertEqual(target, "knowledge-plan")
+            self.assertEqual(conn.execute(
+                "SELECT category FROM tool_calls").fetchone()["category"],
+                "mcp_tool")
+            mcp = conn.execute("SELECT * FROM mcp_usage").fetchone()
+            self.assertEqual((mcp["server"], mcp["tool"], mcp["admin_op"]),
+                             ("srv", "work", "call"))
         finally:
             conn.close()
 

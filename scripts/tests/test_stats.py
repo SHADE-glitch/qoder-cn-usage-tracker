@@ -212,25 +212,28 @@ class StatsReportTest(unittest.TestCase):
         self.assertIn("projects             1", out)
         # Four tool calls, one of them an error and one with no result at all.
         self.assertIn("tool calls           4  (1 failed, 1 pending)", out)
-        # Five tools listed, two of which only the inventory knows about: the
-        # panel is `used | installed`, not `used`.
-        self.assertIn("distinct tools       5", out)
+        # Three tools were used; the two install-only names stay in `inventory`
+        # rather than padding the report. `--all` brings them back below.
+        self.assertIn("distinct tools       3", out)
         self.assertIn("skill invocations    2  (2 distinct)", out)
         self.assertIn("agent runs           1  (1 types)", out)
         self.assertIn("mcp calls            1  (1 servers)", out)
         self.assertIn("slash commands       2  (2 distinct)", out)
+        self.assertIn("plugins used         1", out)
         # The seed's one response reports tokens, so the token lines are real
-        # measurements and the coverage line says the sums describe all of it.
-        self.assertIn("token coverage       100.0% (1/1)", out)
-        self.assertIn("credits-only         0", out)
-        self.assertIn("unmeasured           0", out)
+        # measurements. Coverage is no longer a reported statistic.
+        self.assertIn("input tokens         100", out)
+        self.assertNotIn("coverage", out.lower())
+        self.assertNotIn("credits-only", out.lower())
+        self.assertNotIn("unmeasured", out.lower())
 
     def test_the_tools_table_scales_a_duration_to_seconds(self):
         rc, out, err = run("--db", self.t.db_path, "tools")
         self.assertEqual(rc, 0, err)
         rows = {line.split()[0]: line for line in body(out)}
-        self.assertEqual(set(rows), {"Bash", "Glob", "Read", "Grep", "never-used"},
-                         "the tools table lost, gained or renamed a row")
+        # The default boundary is "used in this window", matching the tab.
+        self.assertEqual(set(rows), {"Bash", "Glob", "Read"},
+                         "the tools table lost, gained or renamed a used row")
         # 1200 ms and 3000 ms average out to 2.10 s; 500 ms stays in ms.
         self.assertEqual(cells(rows["Bash"], 6),
                          ["Bash", "2", "1", "1", "0", "2.10s"])
@@ -239,23 +242,27 @@ class StatsReportTest(unittest.TestCase):
         # A call with no result is counted as pending and has no duration to
         # average: `-`, never a `0ms` that reads as a measured zero.
         self.assertEqual(cells(rows["Glob"], 6), ["Glob", "1", "0", "0", "1", "-"])
-        # An installed tool that was never called still lists, with nothing yet
-        # to average or date.
-        self.assertEqual(cells(rows["Grep"], 7),
-                         ["Grep", "0", "0", "0", "0", "-", "-"])
         self.assertIn(stamp(m(2)), rows["Bash"])       # its newest call, c1
         self.assertIn(stamp(m(1)), rows["Read"])
+        # `--all` is the CLI's `a`: installed tools return at zero, with nothing
+        # yet to average or date.
+        rc, out, err = run("--db", self.t.db_path, "tools", "--all")
+        self.assertEqual(rc, 0, err)
+        every = {line.split()[0]: line for line in body(out)}
+        self.assertEqual(set(every), {"Bash", "Glob", "Read", "Grep", "never-used"})
+        self.assertEqual(cells(every["Grep"], 7),
+                         ["Grep", "0", "0", "0", "0", "-", "-"])
 
     def test_the_skills_table_names_the_owning_plugin_or_marks_it_absent(self):
         rc, out, err = run("--db", self.t.db_path, "skills")
         self.assertEqual(rc, 0, err)
         rows = {line.split()[0]: line for line in body(out)}
         self.assertEqual(set(rows), {"demo-skill", "playwright-cli"})
-        self.assertEqual(cells(rows["demo-skill"], 3),
-                         ["demo-skill", "1", "demo-plugin"])
+        self.assertEqual(cells(rows["demo-skill"], 5),
+                         ["demo-skill", "1", "1", "0", "demo-plugin"])
         # A bare skill has no owner to invent: the cell reads `-`.
-        self.assertEqual(cells(rows["playwright-cli"], 3),
-                         ["playwright-cli", "1", "-"])
+        self.assertEqual(cells(rows["playwright-cli"], 5),
+                         ["playwright-cli", "1", "1", "0", "-"])
         self.assertIn(stamp(m(1)), rows["demo-skill"])
 
     def test_the_agents_table_lists_a_type_with_its_runs_and_cost_columns(self):
@@ -264,20 +271,22 @@ class StatsReportTest(unittest.TestCase):
         rows = {line.split()[0]: line for line in body(out)}
         self.assertEqual(set(rows), {"Explore"},
                          "agents must list used types plus the inventory's")
-        # The seed's run has no linked response: requests read 0, and the token
-        # cell stays `-` (no measurement) rather than a fabricated 0.
-        self.assertEqual(cells(rows["Explore"], 4), ["Explore", "1", "1", "0"])
-        self.assertEqual(cells(rows["Explore"], 8)[4], "-")
+        # The seed's run has no linked response: requests read 0, and the usage
+        # total stays `-` (no measurement) rather than a fabricated 0.
+        self.assertEqual(cells(rows["Explore"], 8),
+                         ["Explore", "1", "1", "0", "0", "-", "-", "-"])
         self.assertIn("requests = responses linked by the", out)
         self.assertIn(stamp(m(3)), rows["Explore"])
 
-    def test_the_project_board_carries_cost_coverage_and_compaction_tax(self):
+    def test_the_project_board_carries_usage_total_and_compaction_tax(self):
         rc, out, err = run("--db", self.t.db_path, "projects")
         self.assertEqual(rc, 0, err)
         rows = body(out)
         self.assertEqual(len(rows), 1, out)
         self.assertIn("/work/demo", rows[0])
-        self.assertIn("100.0% (1/1)", rows[0])
+        # Usage Total = 100 input + 10 output + 80 cache read.
+        self.assertIn("190", rows[0])
+        self.assertNotIn("%", rows[0], "coverage was removed from the board")
         self.assertEqual(cells(rows[0], 3), ["/work/demo", "1", "1"])
         # 900 - 200 from the seeded compaction, shown beside the token sums and
         # never added to them.
@@ -322,30 +331,35 @@ class StatsReportTest(unittest.TestCase):
         self.assertIn("no such project: /never", err)
         self.assertEqual(out, "")
 
-    def test_stats_splits_coverage_at_the_capture_boundary(self):
+    def test_stats_no_longer_reports_capture_or_coverage(self):
+        """The owner always runs the CLI with the token flag now; the old
+        capture boundary is not a statistic the report should carry."""
         rc, out, err = run("--db", self.t.db_path, "stats")
         self.assertEqual(rc, 0, err)
-        # The seed's only response is token-covered, so the split says the
-        # capture began at that call and nothing before it is unmeasurable.
-        self.assertIn("token capture began", out)
-        self.assertIn("before capture       0 requests", out)
-        self.assertIn("since capture        100.0% (1/1)", out)
+        self.assertNotIn("token capture", out.lower())
+        self.assertNotIn("coverage", out.lower())
         self.assertIn("compactions          1  (700 context tokens dropped, 4.00s)",
                       out)
+        self.assertIn("`—` = the call was billed without reporting a token", out)
 
     def test_the_mcp_table_splits_the_server_from_the_tool(self):
         rc, out, err = run("--db", self.t.db_path, "mcp")
         self.assertEqual(rc, 0, err)
         rows = {line.split()[0]: line for line in body(out)}
-        self.assertEqual(set(rows), {"node-repl", "idle-server"})
-        self.assertEqual(cells(rows["node-repl"], 4),
-                         ["node-repl", "node_repl", "1", "40ms"])
-        # A configured server with no calls yet is still a row — with no tool to
-        # name, so the cell reads the em dash rather than a blank that would make
-        # the row look like the same server again.
-        self.assertEqual(cells(rows["idle-server"], 5),
-                         ["idle-server", "—", "0", "-", "-"])
+        self.assertEqual(set(rows), {"node-repl"},
+                         "an unused configured server belongs behind --all")
+        self.assertEqual(cells(rows["node-repl"], 6),
+                         ["node-repl", "node_repl", "1", "1", "0", "40ms"])
         self.assertIn(stamp(m(4)), rows["node-repl"])
+        # `--all` is the tab's `a`: a configured server with no calls returns —
+        # with no tool to name, so the cell reads the em dash rather than a blank
+        # that would make the row look like the same server again.
+        rc, out, err = run("--db", self.t.db_path, "mcp", "--all")
+        self.assertEqual(rc, 0, err)
+        every = {line.split()[0]: line for line in body(out)}
+        self.assertEqual(set(every), {"node-repl", "idle-server"})
+        self.assertEqual(cells(every["idle-server"], 6),
+                         ["idle-server", "—", "0", "0", "0", "-"])
 
     def test_the_commands_table_ranks_and_limits_slash_commands(self):
         rc, out, err = run("--db", self.t.db_path, "commands")
@@ -375,11 +389,18 @@ class StatsReportTest(unittest.TestCase):
         self.assertEqual(len(rows), 1, out)
         self.assertIn("ark-code-latest", rows[0])
         self.assertIn("Volcano ARK", rows[0])
-        self.assertIn("100.0% (1/1)", rows[0])
-        # `api total` is input + output, and the footnote is what tells a reader
-        # why the cache read is beside it and not added into it.
-        self.assertRegex(out, r"api total = input \+ output")
-        self.assertRegex(out, r"coverage = requests that reported any non-zero token")
+        # Usage Total leads, then credits; API Total is the narrower sum. The
+        # provider is two words, so the row is checked by content, not position.
+        self.assertIn("usage total", out)
+        self.assertIn("190", rows[0])
+        self.assertIn("110", rows[0])
+        self.assertIn("80.0%", rows[0])
+        self.assertNotIn("coverage", out.lower())
+        # The footnote explains the two derived totals a reader would otherwise
+        # have to guess at.
+        self.assertIn("usage total = input + output + cache hit", out)
+        self.assertIn("api total   = input + output", out)
+        self.assertIn("cache miss is derived", out)
 
     def test_the_builtin_sentinel_is_never_printed_as_a_label(self):
         """`models` and `show` carry the same one-column Provider label as the
@@ -513,7 +534,7 @@ class EmptyReportTest(unittest.TestCase):
         conn.close()
 
     def test_a_report_with_nothing_in_it_names_the_fix(self):
-        for cmd, notice in (("mcp", "no MCP servers configured or used yet"),
+        for cmd, notice in (("mcp", "no MCP calls in this window"),
                             ("models", "no model responses indexed yet")):
             rc, out, err = run("--db", self.t.db_path, cmd)
             self.assertEqual(rc, 0, err)
@@ -686,21 +707,21 @@ class HealthReportTest(unittest.TestCase):
                            ("sync_state", 1), ("sessions", 1)):
             self.assertRegex(out, rf"{key}\s+{value}\b")
 
-    def test_health_reports_the_token_flag_and_the_all_time_coverage(self):
+    def test_health_reports_the_token_flag_without_a_coverage_ledger(self):
         """The flag is read by the CLI, not by qcut — but health can report it.
 
-        A reader whose coverage is low needs the reason on the same screen as the
-        counts; sending them to `qcut env` from a report that already knows the
-        answer would be a detour.
+        Coverage and the capture boundary were removed; the index's own counts
+        and pressure stay on the same screen.
         """
         with mock.patch.dict(os.environ, {}):
             os.environ.pop(db.TOKEN_ENV_NAME, None)
             rc, out, err = run("--db", self.t.db_path, "health")
         self.assertEqual(rc, 0, err)
         self.assertIn(f"tokens:   {db.TOKEN_ENV_NAME} not set", out)
-        self.assertRegex(
-            out, r"coverage\s+100\.0% \(1/1\) token-covered · "
-                 r"0 credits-only · 0 unmeasured")
+        self.assertNotIn("coverage", out.lower())
+        self.assertIn("calls     4 builtin · 2 skills · 1 agent runs · "
+                      "1 MCP · 2 commands", out)
+        self.assertIn("context   peak", out)
 
         with mock.patch.dict(os.environ, {db.TOKEN_ENV_NAME: "1"}):
             rc, out, err = run("--db", self.t.db_path, "health")
@@ -761,16 +782,16 @@ class EnvReportTest(unittest.TestCase):
         self.t = TempTree(self)
         seed_db(self.t.db_path)
 
-    def test_unset_flag_names_the_export_and_the_index_coverage(self):
+    def test_unset_flag_names_the_export_without_a_coverage_ledger(self):
         with mock.patch.dict(os.environ, {}):
             os.environ.pop(db.TOKEN_ENV_NAME, None)
             rc, out, err = run("--db", self.t.db_path, "env")
         self.assertEqual(rc, 0, err)
         self.assertIn(f"{db.TOKEN_ENV_NAME}: not set", out)
-        self.assertIn("100.0% (1/1)", out)
+        self.assertNotIn("coverage", out.lower())
         self.assertIn(f"export {db.TOKEN_ENV_NAME}=1", out)
         self.assertIn("does not edit shell profiles", out)
-        self.assertIn("cannot be recovered", out)
+        self.assertIn("cannot be recovered", " ".join(out.split()))
 
     def test_a_present_flag_is_reported_as_present(self):
         with mock.patch.dict(os.environ, {db.TOKEN_ENV_NAME: "1"}):
@@ -1050,13 +1071,15 @@ class FormatCliTest(unittest.TestCase):
                          "a read-only report left a snapshot behind")
 
     def test_write_splices_between_the_markers_and_keeps_the_prose(self):
-        path = self.doc("<!-- BEGIN GENERATED -->\nold\n<!-- END GENERATED -->\n"
+        path = self.doc("<!-- BEGIN GENERATED -->\nSTALE-BLOCK-SENTINEL\n"
+                        "<!-- END GENERATED -->\n"
                         "## Hand-written section\n\nNot generated.\n")
         rc, out, err = run("format", "--write", "--out", path)
         self.assertEqual(rc, 0, err)
         text = path.read_text(encoding="utf-8")
         self.assertIn("# Qoder CN CLI format surface", text)
-        self.assertNotIn("old", text, "the generated block was not replaced")
+        self.assertNotIn("STALE-BLOCK-SENTINEL", text,
+                         "the generated block was not replaced")
         self.assertIn("## Hand-written section", text,
                       "the writer dropped what it did not generate")
         self.assertEqual(text.count("<!-- BEGIN GENERATED -->"), 1,

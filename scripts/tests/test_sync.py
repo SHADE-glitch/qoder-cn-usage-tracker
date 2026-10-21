@@ -397,6 +397,25 @@ class EntityClassificationTest(unittest.TestCase):
         self.assertEqual((row["server"], row["tool"], row["admin_op"]),
                          ("builtin", "get_table", "call"))
 
+    def test_an_mcp_target_used_directly_as_the_tool_name_is_recorded(self):
+        """Newer records name `mcp__<server>__<tool>` as the tool itself.
+
+        The shape, not a prefix on a *different* tool name: this must become one
+        mcp_usage row, and it must not also land in tool_calls as a builtin.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "mcp__srv__do_thing")]),
+        ])
+        self.t.sync()
+        row = self.t.one("SELECT * FROM mcp_usage")
+        self.assertEqual((row["server"], row["tool"], row["admin_op"]),
+                         ("srv", "do_thing", "call"))
+        # The tool call is kept for its duration/status, but under the mcp_tool
+        # category so it never inflates the builtin call count or the Tools tab.
+        self.assertEqual(self.t.one("SELECT category FROM tool_calls")["category"],
+                         "mcp_tool")
+
     def test_a_free_text_argument_is_never_stored(self):
         """The agent `description`/`prompt` is prose; only the catalog name is kept."""
         sentinel = "SENTINEL-PROSE-9f2a"
@@ -472,6 +491,22 @@ class CommandTest(unittest.TestCase):
         row = self.t.one("SELECT * FROM commands")
         self.assertEqual(row["command"], "playwright-cli")
         self.assertEqual(row["session_id"], "s1")
+
+    def test_a_skill_results_command_name_is_not_a_slash_command(self):
+        """Qoder writes the skill's own name into `commandName` on a Skill result.
+
+        Recording it made the Commands report a mirror of Skills (five of five on
+        the owner's index); only a non-Skill tool result may become a command.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "Skill", skill="playwright-cli")]),
+            tool_result("r1", "c1", commandName="playwright-cli"),
+        ])
+        self.t.sync()
+        self.assertEqual(self.t.rows("SELECT * FROM commands"), [])
+        self.assertEqual(self.t.one("SELECT skill FROM skill_usage")["skill"],
+                         "playwright-cli")
 
     def test_nothing_outside_the_command_marker_reaches_a_column(self):
         """The marker's contents are stored; the prose around it is not."""

@@ -96,8 +96,11 @@ class RebuildSnapshotTest(unittest.TestCase):
         the after state is a row that exists in exactly one of them.
         """
         conn = self.t.conn()
-        conn.execute("INSERT INTO tool_calls(call_id, tool_name, ts) VALUES(?,?,?)",
-                     ("gone", name, TS))
+        # `category='builtin'` keeps this a row q_tools counts: the tool ledger
+        # is the builtin ledger now, and a NULL-category row would be invisible
+        # to the very query this snapshot case reads.
+        conn.execute("INSERT INTO tool_calls(call_id, tool_name, ts, category)"
+                     " VALUES(?,?,?,'builtin')", ("gone", name, TS))
         conn.commit()
         conn.close()
 

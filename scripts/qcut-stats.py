@@ -53,7 +53,9 @@ def ms(v):
         return "-"
     if v < 1000:
         return f"{v:.0f}ms"
-    return f"{v / 1000:.2f}s"
+    if v < 60000:
+        return f"{v / 1000:.2f}s"
+    return f"{v / 60000:.1f}m"
 
 
 def fmt_n(v):
@@ -85,18 +87,6 @@ def fmt_tok(value, reported):
     return fmt_n(value)
 
 
-def fmt_coverage(covered, requests):
-    """Token-covered requests as a share of all requests, or ``-`` when empty.
-
-    Mirrors the TUI's formatter. Coverage is a share of *requests*, never of
-    token volume: the tokens a legacy hosted call hid are unknowable.
-    """
-    frac = db.token_coverage(covered or 0, requests or 0)
-    if frac is None:
-        return "-"
-    return f"{frac * 100:.1f}% ({covered or 0:,}/{requests or 0:,})"
-
-
 def fmt_credit_total(value, carried):
     """An aggregate of credits: `-` when no row inside it carried the field.
 
@@ -117,11 +107,9 @@ def pct(value):
     return f"{value * 100:.1f}%"
 
 
-def _api_total(row):
-    """input + output, rendered as a token cell under the same coverage flag."""
-    if row["input_tokens"] is None or row["output_tokens"] is None:
-        return None
-    return row["input_tokens"] + row["output_tokens"]
+def hit_rate(hit, miss, write):
+    frac = db.cache_hit_rate(hit, miss, write)
+    return "-" if frac is None else f"{frac * 100:.1f}%"
 
 
 def _display_width(text: str) -> int:
@@ -168,8 +156,7 @@ def cmd_stats(conn, args):
     commands = db.q_commands(conn)
 
     # Three states, one per line: an empty window is `-`, a window whose rows
-    # never reported a token is `—`, and a real sum is a numeral. The coverage
-    # lines name how many requests the token sums actually describe.
+    # never reported a token is `—`, and a real sum is a numeral.
     def token_line(value):
         if not k["requests"]:
             return "-"
@@ -187,23 +174,24 @@ def cmd_stats(conn, args):
         f"  range                {span}",
         "",
         f"  model requests       {fmt_n(k['requests'])}",
-        f"  token coverage       {fmt_coverage(k['token_covered'], k['requests'])}",
-        f"  credits-only         {fmt_n(k['credits_only'])}",
-        f"  unmeasured           {fmt_n(k['unmeasured'])}",
+        f"  usage total          {token_line(k['usage_total_tokens'])}",
         f"  input tokens         {token_line(k['input_tokens'])}",
         f"  output tokens        {token_line(k['output_tokens'])}",
         f"  cache read tokens    {token_line(k['cache_read_tokens'])}",
         f"  credits              {fmt_credit_total(k['credits'], k['credits_carried'])}",
         f"  agent requests       {fmt_n(k['agent_requests'])}"
-        f"  ({fmt_credit_total(k['agent_credits'], k['agent_credits'])} credits)",
+        f"  ({fmt_credit_total(k['agent_credits'], k['agent_credits_carried'])}"
+        f" credits)",
         f"  peak context         {pct(k['peak_context'])}",
         f"  compactions          {fmt_n(k['compactions'])}"
         f"  ({fmt_n(k['compacted_tokens'])} context tokens dropped, "
         f"{ms(k['compaction_avg_ms'])})",
         "",
-        f"  tool calls           {fmt_n(k['tool_calls'])}"
-        f"  ({fmt_n(k['tool_failed'])} failed, {fmt_n(k['tool_pending'])} pending)",
-        f"  distinct tools       {fmt_n(len(db.q_tools(conn)))}",
+        f"  tool calls           {fmt_n(k['builtin_tool_calls'])}"
+        f"  ({fmt_n(k['builtin_failed'])} failed, "
+        f"{fmt_n(k['builtin_pending'])} pending)",
+        f"  distinct tools       "
+        f"{fmt_n(sum(1 for r in db.q_tools(conn) if r['calls']))}",
         f"  skill invocations    {fmt_n(k['skill_calls'])}"
         f"  ({fmt_n(k['skill_names'])} distinct)",
         f"  agent runs           {fmt_n(k['agent_calls'])}"
@@ -212,47 +200,28 @@ def cmd_stats(conn, args):
         f"  ({fmt_n(k['mcp_servers'])} servers)",
         f"  slash commands       {fmt_n(sum(r['calls'] for r in commands))}"
         f"  ({fmt_n(len(commands))} distinct)",
+        f"  plugins used         {fmt_n(k['plugins'])}",
+        "",
+        "  `—` = the call was billed without reporting a token (legacy hosted",
+        "        calls); `-` = no data. Credits and tokens can coexist.",
     ]
-    # The all-time coverage is dominated by calls written before the CLI was run
-    # with the capture flag. Split the index at the first token-covered call so
-    # that structural unmeasurability cannot read as a broken parser.
-    if k["first_token_ts"]:
-        lines += [
-            "",
-            f"  token capture began  {ts(k['first_token_ts'])}",
-            f"  before capture       {fmt_n(k['capture_before'])} requests · credits"
-            f" only, unrecoverable",
-            f"  since capture        {fmt_coverage(k['capture_since_covered'], k['capture_since_requests'])}"
-            f" token-covered",
-        ]
-    elif k["requests"]:
-        lines += [
-            "",
-            "  token capture        not observed yet — index every token field reads",
-            "                       zero; run the CLI with "
-            f"{db.TOKEN_ENV_NAME}=1",
-        ]
-    if k["requests"] and k["token_covered"] < k["requests"]:
-        if k["token_covered"]:
-            note = (f"token sums cover only the {k['token_covered']:,} of "
-                    f"{k['requests']:,} requests that reported one "
-                    f"({fmt_coverage(k['token_covered'], k['requests'])}).")
-        else:
-            note = ("no request in this index reported a token, so the token "
-                    "lines above read `—`.")
-        lines += [
-            "",
-            f"  note: {note}",
-            "        Hosted calls written without the env flag store a literal 0 in",
-            "        every token field; qcut cannot recover them. Run `qcut env` to",
-            f"        capture real tokens on future CLI calls ({db.TOKEN_ENV_NAME}=1).",
-        ]
     print("\n".join(lines))
     return 0
 
 
+def _used_only(rows, key="calls", show_all=False):
+    """The tab's default boundary: what this window used.
+
+    The Tokens tab never lists an unused model, and the entity tabs follow the
+    same rule unless the caller asks for the installed ∪ ever-used set (`--all`
+    in the CLI, `a` in the TUI).
+    """
+    return list(rows) if show_all else [r for r in rows if r[key]]
+
+
 def cmd_tools(conn, args):
-    rows = db.q_tools(conn, limit=_limit(args))
+    rows = _used_only(db.q_tools(conn, limit=_limit(args)),
+                      show_all=getattr(args, "all", False))
     cur = [[r["tool_name"], fmt_n(r["calls"]), fmt_n(r["completed"]), fmt_n(r["failed"]),
             fmt_n(r["pending"]), ms(r["avg_ms"]), ts(r["last_used"])] for r in rows]
     print(table(["tool", "calls", "ok", "failed", "pending", "avg", "last used"], cur,
@@ -261,18 +230,21 @@ def cmd_tools(conn, args):
 
 
 def cmd_skills(conn, args):
-    rows = db.q_skills(conn, limit=_limit(args))
-    cur = [[r["skill"], fmt_n(r["calls"]), r["plugin"] or "-", ts(r["last_used"])]
+    rows = _used_only(db.q_skills(conn, limit=_limit(args)),
+                      show_all=getattr(args, "all", False))
+    cur = [[r["skill"], fmt_n(r["calls"]), fmt_n(r["completed"]),
+            fmt_n(r["failed"]), r["plugin"] or "-", ts(r["last_used"])]
            for r in rows]
-    print(table(["skill", "calls", "plugin", "last used"], cur,
-                aligns=["<", ">", "<", "<"]))
+    print(table(["skill", "calls", "ok", "failed", "plugin", "last used"], cur,
+                aligns=["<", ">", ">", ">", "<", "<"]))
     return 0
 
 
 def cmd_agents(conn, args):
-    rows = db.q_agents(conn, limit=_limit(args))
+    rows = _used_only(db.q_agents(conn, limit=_limit(args)), key="runs",
+                      show_all=getattr(args, "all", False))
     if not rows:
-        print("no agent runs recorded yet — run `qcut sync`")
+        print("no agent runs in this window — run `qcut sync` or pass --all")
         return 0
     # A run is one `Agent` tool call; requests/tokens/credits are the responses
     # its own `parent_tool_use_id` links to it. A run whose sidechain file was
@@ -281,13 +253,13 @@ def cmd_agents(conn, args):
     for r in rows:
         rep = bool(r["token_covered"])
         cur.append([r["agent_type"], fmt_n(r["runs"]), fmt_n(r["completed"]),
-                    fmt_n(r["requests"]),
-                    fmt_tok(_api_total(r), rep),
+                    fmt_n(r["failed"]), fmt_n(r["requests"]),
+                    fmt_tok(r["usage_total_tokens"], rep),
                     fmt_credit_total(r["credits"], r["credits_carried"]),
                     pct(r["peak_context"]), ts(r["last_used"])])
-    print(table(["agent type", "runs", "ok", "requests", "api tokens",
+    print(table(["agent type", "runs", "ok", "failed", "requests", "usage total",
                  "credits", "peak ctx", "last used"], cur,
-                aligns=["<", ">", ">", ">", ">", ">", ">", "<"]))
+                aligns=["<", ">", ">", ">", ">", ">", ">", ">", "<"]))
     print()
     print("  runs = Agent tool calls · requests = responses linked by the")
     print("         transcript's own parent_tool_use_id (not inferred)")
@@ -307,14 +279,13 @@ def cmd_projects(conn, args):
             cur.append([
                 r["project"] or "(no project)", fmt_n(r["sessions"]),
                 fmt_n(r["requests"]),
-                fmt_tok(_api_total(r), rep),
+                fmt_tok(r["usage_total_tokens"], rep),
                 fmt_credit_total(r["credits"], r["credits_carried"]),
-                fmt_coverage(r["token_covered"], r["requests"]),
                 fmt_n(r["compactions"]), fmt_n(r["compacted_tokens"]),
                 ts(r["last_used"])])
-        print(table(["project", "sessions", "requests", "api tokens", "credits",
-                     "coverage", "compactions", "compacted", "last used"], cur,
-                    aligns=["<", ">", ">", ">", ">", ">", ">", ">", "<"]))
+        print(table(["project", "sessions", "requests", "usage total", "credits",
+                     "compactions", "compacted", "last used"], cur,
+                    aligns=["<", ">", ">", ">", ">", ">", ">", "<"]))
         print()
         print("  projects are the transcript's own cwd · compacted = context tokens")
         print("             dropped by compactions (never added to a token total)")
@@ -335,26 +306,27 @@ def cmd_projects(conn, args):
         print("  (no sessions in this window)")
         return 0
     cur = [[r["session_id"] or "-", ts(r["last_used"]), fmt_n(r["requests"]),
-            fmt_tok(_api_total(r), bool(r["token_covered"])),
+            fmt_tok(r["usage_total_tokens"], bool(r["token_covered"])),
             fmt_credit_total(r["credits"], r["credits_carried"]),
-            fmt_coverage(r["token_covered"], r["requests"]),
             pct(r["peak_context"]), fmt_n(r["compactions"]),
             fmt_n(r["compacted_tokens"]), r["model"] or "-"] for r in rows]
-    print(table(["session", "last used", "requests", "api tokens", "credits",
-                 "coverage", "peak ctx", "compactions", "compacted", "model"],
-                cur, aligns=["<", "<", ">", ">", ">", ">", ">", ">", ">", "<"]))
+    print(table(["session", "last used", "requests", "usage total", "credits",
+                 "peak ctx", "compactions", "compacted", "model"],
+                cur, aligns=["<", "<", ">", ">", ">", ">", ">", ">", "<"]))
     return 0
 
 
 def cmd_mcp(conn, args):
-    rows = db.q_mcp(conn, limit=_limit(args))
+    rows = _used_only(db.q_mcp(conn, limit=_limit(args)),
+                      show_all=getattr(args, "all", False))
     if not rows:
-        print("no MCP servers configured or used yet")
+        print("no MCP calls in this window — run `qcut sync` or pass --all")
         return 0
-    cur = [[(r["server"] or "—"), (r["tool"] or "—"), fmt_n(r["calls"]),
-            ms(r["avg_ms"]), ts(r["last_used"])] for r in rows]
-    print(table(["server", "tool", "calls", "avg", "last used"], cur,
-                aligns=["<", "<", ">", ">", "<"]))
+    cur = [[(r["server"] or "(admin)"), (r["tool"] or "—"), fmt_n(r["calls"]),
+            fmt_n(r["completed"]), fmt_n(r["failed"]), ms(r["avg_ms"]),
+            ts(r["last_used"])] for r in rows]
+    print(table(["server", "tool", "calls", "ok", "failed", "avg", "last used"],
+                cur, aligns=["<", "<", ">", ">", ">", ">", "<"]))
     return 0
 
 
@@ -367,21 +339,30 @@ def cmd_models(conn, args):
     for r in rows:
         rep = bool(r["token_covered"])
         cur.append([
-            r["model"], db.provider_label(r["provider"]), fmt_n(r["requests"]),
-            fmt_coverage(r["token_covered"], r["requests"]),
+            r["model"], db.provider_label(r["provider"]),
+            fmt_tok(r["usage_total_tokens"], rep),
+            fmt_credit_total(r["credits"], r["credits_carried"]),
+            fmt_n(r["requests"]),
             fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
             fmt_tok(r["total_tokens"], rep),
             fmt_tok(r["cache_read_tokens"], rep),
-            fmt_credit_total(r["credits"], r["credits_carried"]),
+            fmt_tok(r["cache_miss_tokens"], rep),
+            fmt_tok(r["cache_creation_tokens"], rep),
+            hit_rate(r["cache_read_tokens"], r["cache_miss_tokens"],
+                     r["cache_creation_tokens"]),
+            ts(r["last_used"]),
         ])
-    print(table(["model", "provider", "requests", "coverage", "input", "output",
-                 "api total", "cache read", "credits"], cur,
-                aligns=["<", "<", ">", ">", ">", ">", ">", ">", ">"]))
+    print(table(["model", "provider", "usage total", "credits", "requests",
+                 "input", "output", "api total", "cache hit", "cache miss",
+                 "cache write", "hit rate", "last used"], cur,
+                aligns=["<", "<", ">", ">", ">", ">", ">", ">", ">", ">", ">",
+                        ">", "<"]))
     print()
-    print("  api total = input + output (input already contains cache read on this shape)")
-    print("  coverage = requests that reported any non-zero token; token columns sum")
-    print("             only those requests. Credits and tokens can coexist; `-` means")
-    print("             no field was present, `—` means the route reported zero.")
+    print("  usage total = input + output + cache hit (display total; input")
+    print("                already contains cache hit on this shape)")
+    print("  api total   = input + output · cache miss is derived from input")
+    print("  rank        = usage total, then credits · `—` = the route reported")
+    print("                no token · `-` = no field / no data")
     return 0
 
 
@@ -412,12 +393,16 @@ def cmd_plugins(conn, args):
 _SHOW_LABELS = {
     "avg_ms": "avg", "duration_ms": "duration", "first_used": "first used",
     "last_used": "last used", "is_sidechain": "sidechain", "admin_op": "op",
-    "token_covered": "token covered", "credits_only": "credits-only",
-    "unmeasured": "unmeasured", "token_coverage": "coverage",
-    "missing_input": "missing input", "missing_output": "missing output",
+    "usage_total_tokens": "usage total", "total_tokens": "api total",
+    "cache_read_tokens": "cache hit", "cache_miss_tokens": "cache miss",
+    "cache_creation_tokens": "cache write",
     "peak_context": "peak context", "compacted_tokens": "compacted",
-    "credits_carried": "credits carried", "agent_type": "agent type",
+    "agent_type": "agent type",
 }
+# Flags the queries carry so a zero can be drawn as `—`, not readings a person
+# asks a report for. The TUI hides them the same way; `show` should not surface
+# them as if they were measurements.
+_INTERNAL_FIELDS = {"token_covered", "credits_carried"}
 
 
 def _fmt_field(key, value, row=None):
@@ -434,8 +419,6 @@ def _fmt_field(key, value, row=None):
         return ts(value)
     if key in ("ms", "avg_ms", "duration_ms"):
         return ms(value)
-    if key == "token_coverage":
-        return "-" if value is None else f"{value * 100:.1f}%"
     if key == "peak_context":
         return pct(value)
     if key == "provider":
@@ -469,6 +452,8 @@ def cmd_show(conn, args):
     summary = db.q_entity_summary(conn, kind, name, start, end)
     print(f"{kind}: {name}")
     for key in summary.keys():
+        if key in _INTERNAL_FIELDS:
+            continue
         print(f"  {_SHOW_LABELS.get(key, key):<18} "
               f"{_fmt_field(key, summary[key], summary)}")
     print()
@@ -478,7 +463,7 @@ def cmd_show(conn, args):
     for row in rows:
         print("  " + "  ".join(
             f"{_SHOW_LABELS.get(k, k)}={_fmt_field(k, row[k], row)}"
-            for k in row.keys()))
+            for k in row.keys() if k not in _INTERNAL_FIELDS))
     return 0
 
 
@@ -599,17 +584,11 @@ def cmd_health(conn, args):
     if db.stored_version(conn) >= db.SCHEMA_VERSION:
         k = db.q_usage_kpi(conn)
         print()
-        print(f"  coverage  {fmt_coverage(k['token_covered'], k['requests'])} "
-              f"token-covered · {fmt_n(k['credits_only'])} credits-only · "
-              f"{fmt_n(k['unmeasured'])} unmeasured")
-        if k["first_token_ts"]:
-            print(f"  capture   began {ts(k['first_token_ts'])} · before it "
-                  f"{fmt_n(k['capture_before'])} requests are unrecoverable · "
-                  f"since then "
-                  f"{fmt_coverage(k['capture_since_covered'], k['capture_since_requests'])}")
-        else:
-            print(f"  capture   not observed yet (run the CLI with "
-                  f"{db.TOKEN_ENV_NAME}=1)")
+        print(f"  calls     {fmt_n(k['builtin_tool_calls'])} builtin · "
+              f"{fmt_n(k['skill_calls'])} skills · "
+              f"{fmt_n(k['agent_calls'])} agent runs · "
+              f"{fmt_n(k['mcp_calls'])} MCP · "
+              f"{fmt_n(k['commands'])} commands")
         print(f"  context   peak {pct(k['peak_context'])} · "
               f"{fmt_n(k['compactions'])} compactions dropping "
               f"{fmt_n(k['compacted_tokens'])} context tokens")
@@ -625,7 +604,7 @@ def cmd_health(conn, args):
 
 
 def cmd_env(conn, args):
-    """Explain token capture, and what this index currently covers.
+    """Explain the token flag the CLI reads when it writes a transcript.
 
     Read-only by design: the flag has to be present when the *CLI* starts, so
     qcut cannot set it for future sessions, and editing a shell profile on the
@@ -634,23 +613,9 @@ def cmd_env(conn, args):
     value = os.environ.get(db.TOKEN_ENV_NAME)
     print(f"{db.TOKEN_ENV_NAME}: {_token_env_state()}")
     print()
-    if db.stored_version(conn) >= db.SCHEMA_VERSION:
-        k = db.q_usage_kpi(conn)
-        print("index coverage")
-        print(f"  token-covered  {fmt_coverage(k['token_covered'], k['requests'])}")
-        print(f"  credits-only   {fmt_n(k['credits_only'])}")
-        print(f"  unmeasured     {fmt_n(k['unmeasured'])}")
-        if k["first_token_ts"]:
-            print()
-            print(f"capture began {ts(k['first_token_ts'])}")
-            print(f"  before       {fmt_n(k['capture_before'])} requests — credits only,")
-            print(f"               written before the flag; qcut cannot recover them")
-            print(f"  since        "
-                  f"{fmt_coverage(k['capture_since_covered'], k['capture_since_requests'])}"
-                  f" token-covered")
-    else:
-        print("index coverage: no index yet — run `qcut sync`")
-    print()
+    if db.stored_version(conn) < db.SCHEMA_VERSION:
+        print("index: no index yet — run `qcut sync`")
+        print()
     if value != "1":
         print("To capture real tokens on future Qoder CN CLI calls, add this line")
         print("to your shell profile, then open a new terminal:")
@@ -661,8 +626,11 @@ def cmd_env(conn, args):
         print("the CLI starts, not when qcut runs.")
     else:
         print("The flag is present in this shell. It affects future CLI calls only;")
-        print("coverage rises after the next `qcut sync` indexes one.")
-    print(f"Calls already written with zeros cannot be recovered by qcut.")
+        print("run `qcut sync` after your next session to index the real tokens.")
+    print()
+    print("Rows written before the flag were billed without a token and cannot be")
+    print("recovered by qcut. They keep their credits, and their token cells read")
+    print("`—` — never a measured 0.")
     return 0
 
 
@@ -843,7 +811,12 @@ def main(argv=None) -> int:
     # it worked: the table comes back whole and nothing says otherwise.
     for name in ("stats", "plugins", "models", "health", "env"):
         sub.add_parser(name)
-    for name in ("tools", "skills", "agents", "mcp", "commands", "recent"):
+    for name in ("tools", "skills", "agents", "mcp"):
+        p = sub.add_parser(name)
+        p.add_argument("--limit", type=int, default=None)
+        p.add_argument("--all", action="store_true",
+                       help="include installed/known entries with no use in the index")
+    for name in ("commands", "recent"):
         sub.add_parser(name).add_argument("--limit", type=int, default=None)
 
     # A project board is windowed like the TUI tab it mirrors; an optional

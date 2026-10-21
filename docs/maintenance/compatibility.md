@@ -13,12 +13,12 @@ date, not a policy — re-measure before restating any of it.
 
 | Interpreter | Suite |
 |---|---|
-| Python 3.11.15 | 310 OK (2026-10-12; CI is the record for the 378-case suite) |
-| Python 3.13.14 (the `install.sh` venv) | 378 OK (2026-10-21) |
-| Python 3.14.4 | 378 OK (2026-10-21) |
+| Python 3.11.15 | 310 OK (2026-10-12; CI is the record for the 380-case suite) |
+| Python 3.13.14 (the `install.sh` venv) | 380 OK (2026-10-21) |
+| Python 3.14.4 | 380 OK (2026-10-21) |
 
 The 310-case row is the last local measurement for 3.11 with `textual 8.2.8`; the suite has since
-grown to 378 cases. Re-run there before claiming a local green on 3.11. The per-suite counts are
+grown to 380 cases. Re-run there before claiming a local green on 3.11. The per-suite counts are
 in [`baseline.md`](baseline.md).
 
 ## Qoder CN CLI
@@ -32,9 +32,9 @@ in [`baseline.md`](baseline.md).
 - **Hosted token capture depends on the CLI's environment.** The CLI writes real input / output /
   cache-read / cache-creation tokens for Qoder-hosted routes only when its own process sees
   `QODERCN_EXPOSE_TOKEN_USAGE=1` (`db.TOKEN_ENV_NAME`). qcut never sets it, never edits a shell
-  profile, and cannot repair transcripts written without it — those rows hold literal zeros and
-  real credits. Coverage (`token-covered / requests`) is the surface that says how much of the
-  index was captured this way; `qcut env` reports the flag state and the line to add.
+  profile, and cannot repair transcripts written without it — those rows hold literal zeros,
+  real credits, and token cells drawn `—`. There is no coverage percentage or capture ledger;
+  `qcut env` reports the flag state and the line to add.
 
 ## Textual
 
@@ -46,11 +46,13 @@ in [`baseline.md`](baseline.md).
 
 ## SQLite
 
-- The standard library's `sqlite3`; no third-party driver. The index carries schema version `2`
+- The standard library's `sqlite3`; no third-party driver. The index carries schema version `3`
   (`db.SCHEMA_VERSION`). v2 is additive — `parent_call_id`, `agent_id` and the `compactions`
-  table — and opening a v1 index migrates it in place, so old rows keep working. Historical rows
-  gain agent linkage and compaction rows only from `qcut sync --full`: the incremental sync skips
-  files whose size and mtime are unchanged. Coverage is derived at query time.
+  table — and historical rows gain agent linkage and compaction rows only from
+  `qcut sync --full`, because the incremental sync skips files whose size and mtime are
+  unchanged. v3 runs an in-place repair when it opens a v1/v2 index: false slash commands copied
+  from Skill results are dropped, `<plugin>:<skill>` names split, and direct
+  `mcp__server__tool` rows move from builtin tools into MCP.
 
 ## Linux
 

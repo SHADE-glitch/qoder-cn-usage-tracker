@@ -136,6 +136,8 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
                     app.query_one("#dash-row-1")
                     app.query_one("#dash-row-2")
                     app.query_one("#dash-row-3")
+                    app.query_one("#dash-row-4")
+                    app.query_one("#dash-commands")
                     continue
                 if tid == "usage":
                     app.query_one("#usage-box")
@@ -143,7 +145,7 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
                     app.query_one("#panel-window")
                     app.query_one("#panel-tokens")
                     app.query_one("#panel-cache")
-                    app.query_one("#panel-runtime")
+                    app.query_one("#panel-credits")
                 app.query_one(f"#{tid}-table", DataTable)
                 app.query_one(f"#colnote-{tid}")
                 app.query_one(f"#{tid}-table").id
@@ -174,13 +176,17 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(needle, dumped, f"{tab} did not show {needle}")
 
     async def test_a_tab_with_no_data_says_so(self):
-        """The empty state is for a category with nothing at all. Tools is not
-        one: the builtins are always installed, so that tab lists them at zero."""
+        """The empty state is for a category with nothing *used in the window*.
+
+        Installed builtins are still known, but the tools tab follows the same
+        boundary as Tokens: zero-use rows are hidden until `a` widens the tab to
+        the installed ∪ ever-used set.
+        """
         empty = TempTree(self)
         empty.sync()
         app = TUI.TrackerApp(db_path=empty.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(120, 40)) as pilot:
-            from textual.widgets import DataTable, TabbedContent
+            from textual.widgets import DataTable, Static, TabbedContent
             tabs = app.query_one(TabbedContent)
             tabs.active = "skills"
             await pilot.pause()
@@ -192,8 +198,14 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             tools = app.query_one("#tools-table", DataTable)
+            self.assertTrue(any("no tool calls in this window" in str(tools.get_row(k))
+                                for k in tools.rows))
+            await pilot.press("a")
+            await pilot.pause()
             self.assertGreater(tools.row_count, 1,
-                               "installed builtins must still list at zero")
+                               "`a` must bring back the installed builtins")
+            note = str(app.query_one("#filter-tools", Static).content)
+            self.assertIn("showing all known tools", note)
 
 
 class RangeTest(unittest.IsolatedAsyncioTestCase):
@@ -231,7 +243,11 @@ class RangeTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             self.assertEqual(app.query_one("#range", Select).value, "7d")
-            self.assertIn("7 days", str(app.query_one("#date-range", Button).label))
+            # The compact control carries only the calendar glyph; the active
+            # window is its tooltip, not a second copy of the Select's label.
+            btn = app.query_one("#date-range", Button)
+            self.assertEqual(str(btn.label), "📅")
+            self.assertEqual(btn.tooltip, "7 days")
             tabs.active = "tools"
             await pilot.pause()
             await pilot.pause()
@@ -1073,8 +1089,16 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
         conn.close()
 
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        # The mount-time sync rebuilds `inventory` from the fixture tree and
+        # would erase the row this case is about; the tab under test is the
+        # toggle, not the sync.
+        app._auto_sync = False
         async with app.run_test(size=(140, 40)) as pilot:
             await self._tab(app, pilot, "mcp")
+            # The server is installed but unused, so the default view hides it;
+            # `a` is the installed ∪ ever-used switch.
+            await pilot.press("a")
+            await pilot.pause()
             row = self._row_index(app, "mcp-table", "mcp\tidle-srv\t")
             await self._open(app, pilot, "mcp-table", row=row)
             top = app.screen
@@ -1209,8 +1233,12 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
             await self._tab(app, pilot, "agents")
             row = row_map(self._table(app, "agents-table"), "Explore")
             self.assertEqual(row["runs"], "1")
+            # The fixture's Agent call has no tool_result, so the run is pending
+            # and neither completed nor failed.
+            self.assertEqual(row["ok"], "0")
+            self.assertEqual(row["fail"], "0")
             self.assertEqual(row["requests"], "1")
-            self.assertEqual(row["api tokens"], "33")
+            self.assertEqual(row["usage total"], "33")
             self.assertEqual(row["credits"], "0.50")
             self.assertEqual(row["peak ctx"], "42.0%")
 
@@ -1304,7 +1332,7 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             self.assertEqual(self._table(app, "dash-projects").row_count, 2)
-            counter = str(app.query_one("#dash-rt-projects", Static).content)
+            counter = str(app.query_one("#dash-sum-projects", Static).content)
             self.assertIn("Projects", counter)
             self.assertTrue(counter.rstrip().endswith("2"), counter)
 
@@ -1320,8 +1348,12 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("42.0%", peak)
             await self._tab(app, pilot, "tokens")
             note = str(app.query_one("#tokens-note", Static).content)
-            self.assertIn("Token capture began", note)
-            self.assertIn("since then 50.0% (3/6)", note)
+            # Coverage tracking is gone; the note keeps only the provider
+            # legend and the meaning of the two dashes.
+            self.assertNotIn("coverage", note.lower())
+            self.assertNotIn("capture", note.lower())
+            self.assertIn("`—` = this route reported no token", note)
+            self.assertIn("Provider:", note)
 
 
 class StatusLineTest(unittest.IsolatedAsyncioTestCase):
@@ -1332,11 +1364,13 @@ class StatusLineTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             from textual.widgets import Static
             text = str(app.query_one("#status", Static).content)
-            self.assertIn("tool calls", text)
-            self.assertIn("model responses", text)
+            self.assertIn("builtin calls", text)
+            self.assertIn("responses", text)
+            self.assertIn("cmd", text)
             self.assertIn("unclaimed", text)
-            self.assertIn("schema v", text)
-            self.assertIn("auto-sync" if not app._auto_sync else "db ", text)
+            # Path and schema live in `qcut health` now; the bar keeps the
+            # counts, the freshness and any active warning.
+            self.assertNotIn("schema v", text)
 
     async def test_the_auto_sync_switch_is_a_state_not_a_message(self):
         """`s` must not wipe the counts off the bar — the line carries the state."""
@@ -1345,13 +1379,13 @@ class StatusLineTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(160, 40)) as pilot:
             await pilot.pause()
             from textual.widgets import Static
-            self.assertIn("tool calls", str(app.query_one("#status", Static).content))
+            self.assertIn("builtin calls", str(app.query_one("#status", Static).content))
             await pilot.press("s")
             await pilot.pause()
             self.assertFalse(app._auto_sync)
             text = str(app.query_one("#status", Static).content)
             self.assertIn("auto-sync OFF", text)
-            self.assertIn("tool calls", text, "toggling wiped the counts")
+            self.assertIn("builtin calls", text, "toggling wiped the counts")
 
     async def test_the_status_line_is_actually_on_screen(self):
         """Setting the text is not showing it: the bar once carried
@@ -1444,11 +1478,12 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         for col in ("Usage Total", "Input", "Output", "API Total",
                     "Cache hit", "Cache miss", "Cache write"):
             self.assertEqual(hosted[col], "—", col)
-        # What the route *does* report stays a number, and the coverage column
-        # says the same thing the dashes do.
+        # What the route *does* report stays a number.
         self.assertEqual(hosted["Requests"], "2")
         self.assertEqual(hosted["Credits"], "1.75")
-        self.assertEqual(hosted["Coverage"], "0.0%")
+        # Coverage was removed: the table has no share column, and a dashed
+        # token sum does not get a percentage beside it to explain it away.
+        self.assertNotIn("Coverage", hosted)
         # One Provider column carries the family and the channel; there is no
         # second Route column repeating `Built-in` beside it.
         self.assertNotIn("Route", hosted)
@@ -1456,7 +1491,7 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         byok = await self._tokens_row("byok-model")
         self.assertEqual(byok["Input"], "120")
         self.assertEqual(byok["Output"], "24")
-        self.assertEqual(byok["Coverage"], "100.0%")
+        self.assertNotIn("Coverage", byok)
         self.assertNotIn("Route", byok)
         self.assertEqual(byok["Provider"], "qoder-custom-a3d301ce")
         # E1, the other axis: that route never carried a `credits` field, so its
@@ -1492,19 +1527,17 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(200, 45)) as pilot:
             dash = str(app.query_one("#dash-tok-input", Static).content)
             self.assertTrue(dash.endswith("—"), dash)
-            coverage = str(app.query_one("#dash-tok-coverage", Static).content)
-            self.assertTrue(coverage.endswith("0.0%"), coverage)
+            # There is no coverage widget to check: the zero-token window is
+            # told by the dashes alone.
+            self.assertEqual([w.id for w in app.query(".usage-panel") if "coverage" in str(w.id)], [])
             app.query_one(TabbedContent).active = "usage"
             await pilot.pause()
             await pilot.pause()
             panel = str(app.query_one("#sum-input", Static).content)
             self.assertTrue(panel.endswith("—"), panel)
-            coverage = str(app.query_one("#sum-coverage", Static).content)
-            self.assertTrue(coverage.endswith("0.0%"), coverage)
-            detail = str(app.query_one("#sum-coverage-detail", Static).content)
-            self.assertIn("0/2 covered", detail)
-            self.assertIn("2 credits-only", detail)
-            self.assertIn("0 unmeasured", detail)
+            note = str(app.query_one("#usage-note", Static).content)
+            self.assertNotIn("coverage", note.lower())
+            self.assertIn("`—` = no token reported", note)
 
     async def test_a_mixed_window_shows_the_tokens_it_does_have(self):
         # The mirror case, and why the dash also reads the value: one reporting
@@ -1514,19 +1547,18 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(200, 45)) as pilot:
             panel = str(app.query_one("#dash-tok-input", Static).content)
             self.assertTrue(panel.endswith("120"), panel)
-            coverage = str(app.query_one("#dash-tok-coverage", Static).content)
-            self.assertTrue(coverage.endswith("33.3%"), coverage)
             # Top models use the same one-column provider label as the Tokens
             # tab, so a built-in row is not left unlabelled.
             models = str(app.query_one("#dash-models", Static).content)
             self.assertIn("qfmodel · Built-in", models)
-            self.assertIn("byok-model · qoder", models)
+            # The merged label is clipped to the panel's 18-cell name column;
+            # the provider name is still the part that identifies the channel.
+            self.assertIn("byok-model · qode", models)
             app.query_one(TabbedContent).active = "usage"
             await pilot.pause()
             await pilot.pause()
-            detail = str(app.query_one("#sum-coverage-detail", Static).content)
-            self.assertIn("1/3 covered", detail)
-            self.assertIn("2 credits-only", detail)
+            note = str(app.query_one("#usage-note", Static).content)
+            self.assertNotIn("coverage", note.lower())
 
     async def test_a_mixed_model_shows_a_partial_sum_beside_partial_coverage(self):
         """One model, both eras: the sum is real, and it covers a third of the
@@ -1547,20 +1579,15 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             row = row_map(app.query_one("#tokens-table", DataTable), "qfmodel")
-            # Two legacy rows and one measured one: 1 request in 3, not 50% of
-            # the rows and not 50 tokens against a hidden total. The counts
-            # behind the share live on the tab's note, not in a cell that
-            # repeats Requests.
-            self.assertEqual(row["Coverage"], "33.3%")
-            note = str(app.query_one("#tokens-note", Static).content)
-            # The note is the window's aggregate, not this model's: two of four
-            # responses reported a token (the BYOK row plus the inserted one).
-            self.assertIn("50.0% (2/4)", note)
-            self.assertIn("2 credits-only", note)
-            self.assertIn("0 unmeasured", note)
-            self.assertIn("share of requests that reported a token", note)
+            # One model, both eras: the token cells keep the measured value
+            # while the two legacy rows contribute only their credits.
+            self.assertNotIn("Coverage", row)
             self.assertEqual(row["Input"], "50")
+            self.assertEqual(row["Usage Total"], "55")
             self.assertEqual(row["Credits"], "1.75")
+            note = str(app.query_one("#tokens-note", Static).content)
+            self.assertNotIn("coverage", note.lower())
+            self.assertIn("Usage Total re-adds cache hit", note)
 
     async def test_a_credits_only_call_detail_dashes_its_token_rows(self):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
@@ -1582,9 +1609,9 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("(1.5)", detail["credits"])
             # The stored sentinel is not a label a reader should see.
             self.assertEqual(detail["provider"], "Built-in")
-            # The per-call member of the three-state partition names what the
-            # four dashes above already say.
-            self.assertEqual(detail["token coverage"], "credits-only")
+            # Coverage is not a row on this screen any more: the four dashes
+            # already say the route reported no token.
+            self.assertNotIn("token coverage", detail)
 
     async def test_a_byok_call_detail_keeps_its_token_numbers(self):
         """The same screen, the other kind of row: nothing here may be dashed."""
@@ -1602,7 +1629,7 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             # Its credits field is absent, which is `-`: an absent value and a
             # route-level zero are two different statements.
             self.assertEqual(detail["credits"], "-")
-            self.assertEqual(detail["token coverage"], "token-covered")
+            self.assertNotIn("token coverage", detail)
 
     async def test_fmt_tok_is_the_same_function_in_both_renderers(self):
         """The TUI and the headless CLI each define it; they must not drift.
@@ -1633,13 +1660,6 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(TUI.fmt_credit_total(value, carried),
                                  stats.fmt_credit_total(value, carried),
                                  f"value={value!r} carried={carried!r}")
-        # Coverage is the third deliberately-duplicated rule: two copies that
-        # render one window differently would be two answers to one question.
-        for covered, requests in ((0, 0), (0, 1), (1, 2), (71, 40_052),
-                                  (3, 3)):
-            self.assertEqual(TUI.fmt_coverage(covered, requests),
-                             stats.fmt_coverage(covered, requests),
-                             f"covered={covered!r} requests={requests!r}")
 
 
 

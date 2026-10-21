@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # The Qoder CN CLI writes real token fields only when this variable is set in
 # the CLI process's environment. qcut never sets it: it only reads what the CLI
@@ -202,9 +202,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- route (openai-compatible, e.g. ark) reports tokens and carries no credits
 -- field at all -- NULL, not a 0, per the rule above. Tokens and credits can
 -- therefore coexist, and a token sum only describes the rows that reported one.
--- See `token_covered` / `credits_only` / `unmeasured` in `q_models` and the
--- coverage figures in the Dashboard/Tokens tab for how that is surfaced, and
--- `fmt_tok` in the TUI for how a token the route never reports is drawn.
+-- `row_reports_tokens` (and its SQL mirror) turns a route-level zero into `—`
+-- at render time; no coverage percentage is shown or stored.
 CREATE TABLE IF NOT EXISTS model_calls (
     message_id           TEXT PRIMARY KEY,
     session_id           TEXT,
@@ -381,10 +380,17 @@ CREATE TABLE IF NOT EXISTS unparsed (
 # These CTEs are shared by the v_* views (all-time, for ``qcut export``) and by
 # the q_* functions (which add the optional window in the LEFT JOIN's ON clause
 # so an out-of-window entity still yields a zero-count row).
+# Tools means *builtin* tools. Skill / Agent / MCP calls have their own tabs,
+# so including them here (as v2 did) double-listed one invocation and made the
+# Dashboard's "tool calls" overlap every specialised count beneath it. The
+# inventory guard is defensive: a v2 database may still hold those two rows
+# until its next sync rewrites the inventory snapshot.
 _TOOL_NAMES_CTE = (
     "WITH names AS ("
     " SELECT name FROM inventory WHERE kind='tool'"
-    " UNION SELECT DISTINCT tool_name FROM tool_calls WHERE tool_name IS NOT NULL)"
+    "   AND name NOT IN ('Skill', 'Agent')"
+    " UNION SELECT DISTINCT tool_name FROM tool_calls"
+    "   WHERE tool_name IS NOT NULL AND category='builtin')"
 )
 _SKILL_NAMES_CTE = (
     "WITH names AS ("
@@ -426,7 +432,7 @@ SELECT n.name AS tool_name,
        COUNT(DISTINCT c.project)                                AS projects,
        COUNT(DISTINCT c.session_id)                             AS sessions
 FROM names n
-LEFT JOIN tool_calls c ON c.tool_name = n.name
+LEFT JOIN tool_calls c ON c.tool_name = n.name AND c.category = 'builtin'
 GROUP BY n.name;
 
 DROP VIEW IF EXISTS v_skills;
@@ -437,6 +443,7 @@ CREATE VIEW v_skills AS
 SELECT n.name AS skill,
        COUNT(s.call_id)                                        AS calls,
        SUM(CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END)  AS completed,
+       SUM(CASE WHEN s.status = 'error' THEN 1 ELSE 0 END)      AS failed,
        MAX(s.ts)                                                AS last_used,
        MIN(s.ts)                                                AS first_used,
        COUNT(DISTINCT s.project)                                AS projects,
@@ -454,6 +461,7 @@ CREATE VIEW v_agents AS
 SELECT n.name AS agent_type,
        COUNT(a.call_id)                                        AS calls,
        SUM(CASE WHEN a.status = 'completed' THEN 1 ELSE 0 END)  AS completed,
+       SUM(CASE WHEN a.status = 'error' THEN 1 ELSE 0 END)      AS failed,
        MAX(a.ts)                                                AS last_used,
        MIN(a.ts)                                                AS first_used,
        COUNT(DISTINCT a.project)                                AS projects
@@ -468,6 +476,8 @@ SELECT p.server AS server,
        p.tool   AS tool,
        COUNT(m.call_id)                                        AS calls,
        SUM(CASE WHEN m.status = 'completed' THEN 1 ELSE 0 END)  AS completed,
+       SUM(CASE WHEN m.status = 'error' THEN 1 ELSE 0 END)      AS failed,
+       SUM(CASE WHEN m.call_id IS NOT NULL AND m.status IS NULL THEN 1 ELSE 0 END) AS pending,
        CAST(AVG(m.duration_ms) AS INTEGER)                      AS avg_ms,
        MAX(m.ts)                                                AS last_used
 -- ``IS`` rather than ``=``: SQLite's ``=`` is never true when a side is NULL,
@@ -674,6 +684,91 @@ def _add_missing_columns(conn: sqlite3.Connection, table: str, columns) -> bool:
     return added
 
 
+def _migration_mcp_parts(tool_name: str):
+    """Split a direct ``mcp__<server>__<tool>`` name during the v3 repair.
+
+    Kept here rather than imported from ``qcut-sync.py``: a migration must run
+    before the parser is loaded, and the parser owns the same two separators as
+    active format constants. This is the one-place repair of data written by the
+    parser *before* it recognised the direct shape.
+    """
+    prefix, sep = "mcp__", "__"
+    if not isinstance(tool_name, str) or not tool_name.startswith(prefix):
+        return None, None
+    body = tool_name[len(prefix):]
+    if sep in body:
+        server, tool = body.split(sep, 1)
+        return server or None, tool or None
+    return body or None, None
+
+
+def _repair_v3(conn: sqlite3.Connection) -> None:
+    """Repair data written by v2's three blind spots. Additive, idempotent.
+
+    * a Skill result's ``commandName`` is the skill's own name, not a slash
+      command — v2 recorded those as commands;
+    * a skill invoked as ``<plugin>:<skill>`` was stored under the qualified
+      name, while the inventory knows the bare one — the Skills tab and a
+      plugin's resource count listed both;
+    * a direct ``mcp__<server>__<tool>`` tool name was classified as builtin —
+      it disappeared from MCP and appeared on Tools.
+    """
+    # Match the false command before normalising the skill name it mirrors.
+    # A plugin-qualified skill is still qualified here, while its Skill result's
+    # `commandName` is the bare name — match both halves or that pair survives.
+    conn.execute("""
+        DELETE FROM commands
+        WHERE EXISTS (
+            SELECT 1 FROM skill_usage s
+            WHERE s.session_id = commands.session_id
+              AND (s.skill = commands.command
+                   OR (instr(s.skill, ':') > 0
+                       AND substr(s.skill, instr(s.skill, ':') + 1)
+                           = commands.command)))
+    """)
+    conn.execute("""
+        UPDATE skill_usage
+        SET plugin = COALESCE(plugin, substr(skill, 1, instr(skill, ':') - 1)),
+            skill  = substr(skill, instr(skill, ':') + 1)
+        WHERE instr(skill, ':') > 0
+          AND substr(skill, 1, instr(skill, ':') - 1) <> ''
+          AND substr(skill, instr(skill, ':') + 1) <> ''
+    """)
+    conn.execute("""
+        UPDATE plugin_usage
+        SET target = substr(target, instr(target, ':') + 1)
+        WHERE kind = 'skill' AND instr(target, ':') > 0
+          AND substr(target, 1, instr(target, ':') - 1) <> ''
+          AND substr(target, instr(target, ':') + 1) <> ''
+    """)
+    # Normalising two names into one can collide; the unique index cannot have
+    # caught a collision that only exists after the update.
+    conn.execute("""
+        DELETE FROM plugin_usage
+        WHERE id NOT IN (
+            SELECT MIN(id) FROM plugin_usage
+            GROUP BY plugin, kind, target, session_id, ts)
+    """)
+    direct = conn.execute(
+        "SELECT call_id, tool_name, session_id, project, ts, status, duration_ms"
+        " FROM tool_calls"
+        " WHERE category = 'builtin' AND tool_name LIKE 'mcp\\_\\_%' ESCAPE '\\'"
+    ).fetchall()
+    for row in direct:
+        server, tool = _migration_mcp_parts(row["tool_name"])
+        conn.execute(
+            "UPDATE tool_calls SET category = 'mcp_tool' WHERE call_id = ?",
+            (row["call_id"],),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO mcp_usage"
+            "(call_id, server, tool, admin_op, session_id, project, ts,"
+            " status, duration_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+            (row["call_id"], server, tool, "call", row["session_id"],
+             row["project"], row["ts"], row["status"], row["duration_ms"]),
+        )
+
+
 def ensure_schema(conn: sqlite3.Connection) -> str:
     """Create or widen the schema. Idempotent, and safe on a live install."""
     current = stored_version(conn)
@@ -688,6 +783,8 @@ def ensure_schema(conn: sqlite3.Connection) -> str:
         "CREATE INDEX IF NOT EXISTS idx_model_calls_parent"
         " ON model_calls(parent_call_id)"
     )
+    if 0 < current < SCHEMA_VERSION:
+        _repair_v3(conn)
     conn.executescript(VIEWS_SQL)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
@@ -1019,7 +1116,8 @@ def q_tools(conn, limit=None, start_ts=None, end_ts=None):
            COUNT(DISTINCT c.session_id) AS sessions,
            COUNT(DISTINCT c.project) AS projects
     FROM names n
-    LEFT JOIN tool_calls c ON c.tool_name = n.name {('AND ' + on) if on else ''}
+    LEFT JOIN tool_calls c ON c.tool_name = n.name AND c.category = 'builtin'
+         {('AND ' + on) if on else ''}
     GROUP BY n.name
     ORDER BY calls DESC, tool_name
     """
@@ -1035,6 +1133,7 @@ def q_skills(conn, limit=None, start_ts=None, end_ts=None):
     SELECT n.name AS skill,
            COUNT(s.call_id) AS calls,
            SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) AS completed,
+           SUM(CASE WHEN s.status='error' THEN 1 ELSE 0 END) AS failed,
            MAX(s.ts) AS last_used,
            COUNT(DISTINCT s.session_id) AS sessions,
            COALESCE(MAX(s.plugin), (SELECT i.owner_plugin FROM inventory i
@@ -1084,6 +1183,7 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
         SELECT a.agent_type,
                COUNT(a.call_id) AS runs,
                SUM(CASE WHEN a.status='completed' THEN 1 ELSE 0 END) AS completed,
+               SUM(CASE WHEN a.status='error' THEN 1 ELSE 0 END) AS failed,
                COUNT(DISTINCT a.session_id) AS sessions,
                MAX(a.ts) AS last_used,
                SUM(COALESCE(r.requests, 0)) AS requests,
@@ -1103,11 +1203,16 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
     SELECT n.name AS agent_type,
            COALESCE(g.runs, 0) AS runs,
            COALESCE(g.completed, 0) AS completed,
+           COALESCE(g.failed, 0) AS failed,
            COALESCE(g.sessions, 0) AS sessions,
            g.last_used,
            COALESCE(g.requests, 0) AS requests,
            g.input_tokens, g.output_tokens,
            g.cache_read_tokens, g.cache_creation_tokens,
+           CASE WHEN g.input_tokens IS NOT NULL AND g.output_tokens IS NOT NULL
+                THEN g.input_tokens + g.output_tokens
+                     + COALESCE(g.cache_read_tokens, 0) END
+               AS usage_total_tokens,
            g.credits, COALESCE(g.credits_carried, 0) AS credits_carried,
            COALESCE(g.token_covered, 0) AS token_covered,
            g.peak_context
@@ -1120,20 +1225,42 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
     return conn.execute(sql, params).fetchall()
 
 
+def _request_summary(conn, where, params):
+    return conn.execute(f"""
+    SELECT COUNT(*) AS requests,
+           SUM(credits) AS credits,
+           {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
+           {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
+           MAX(context_usage_ratio) AS peak_context
+    FROM model_calls m {where}
+    """, params).fetchone()
+
+
 def q_agent_run_calls(conn, call_id, limit=200):
-    """The responses one Agent run launched, oldest first."""
+    """The newest responses one Agent run launched, with an honest total.
+
+    Newest first because a long run's latest work is what a reader opens the
+    screen for; the header carries the true count so the limit cannot read as
+    the whole run.
+    """
     return conn.execute(f"""
     SELECT m.ts, m.model, m.provider, m.credits,
            m.input_tokens, m.output_tokens, m.cache_read_tokens,
            m.cache_creation_tokens, m.context_usage_ratio, m.is_sidechain,
+           {_USAGE_TOTAL_EXPR} AS usage_total_tokens,
            {_TOTAL_EXPR} AS total_tokens,
            {_CACHE_MISS_EXPR} AS cache_miss_tokens,
            m.message_id AS call_id
     FROM model_calls m
     WHERE m.parent_call_id = ?
-    ORDER BY m.ts, m.message_id
+    ORDER BY m.ts DESC, m.message_id DESC
     LIMIT ?
     """, (call_id, limit)).fetchall()
+
+
+def q_agent_run_summary(conn, call_id):
+    """Totals for every response of one Agent run, not only the shown tail."""
+    return _request_summary(conn, "WHERE parent_call_id = ?", (call_id,))
 
 
 def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
@@ -1144,6 +1271,8 @@ def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
            p.tool AS tool,
            COUNT(m.call_id) AS calls,
            SUM(CASE WHEN m.status='completed' THEN 1 ELSE 0 END) AS completed,
+           SUM(CASE WHEN m.status='error' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN m.call_id IS NOT NULL AND m.status IS NULL THEN 1 ELSE 0 END) AS pending,
            CAST(AVG(m.duration_ms) AS INTEGER) AS avg_ms,
            MAX(m.ts) AS last_used
     FROM pairs p
@@ -1206,18 +1335,18 @@ def q_plugins(conn):
     """).fetchall()
 
 
-def q_commands(conn, limit=None):
-    """Slash-command usage, all-time, ranked by call count."""
-    sql = """
+def q_commands(conn, limit=None, start_ts=None, end_ts=None):
+    """Slash-command usage, ranked by call count, optionally windowed."""
+    where, params = _where(start_ts, end_ts, "commands")
+    sql = f"""
     SELECT command,
            COUNT(*) AS calls,
            COUNT(DISTINCT session_id) AS sessions,
            MAX(ts) AS last_used
-    FROM commands
+    FROM commands {where}
     GROUP BY command
     ORDER BY calls DESC, command
     """
-    params = []
     if limit is not None:
         sql += " LIMIT ?"
         params.append(int(limit))
@@ -1225,13 +1354,11 @@ def q_commands(conn, limit=None):
 
 
 def q_models(conn, start_ts=None, end_ts=None):
-    """Per-model totals: tokens, credits and the token-coverage partition.
+    """Per-model totals: Usage Total first, then credits, then API tokens.
 
-    The three counts partition ``requests``: ``token_covered`` rows reported at
-    least one non-zero token field, ``credits_only`` rows reported none and
-    carried credits, and ``unmeasured`` rows carried neither. Token ``SUM``s
-    stay NULL when no row contributed a field (never a fabricated 0), and they
-    describe only the covered rows — the coverage counts say how many that is.
+    ``token_covered`` is retained only so the renderer can draw a route-level
+    zero as ``—``; it is no longer a coverage statistic. Token ``SUM``s stay
+    NULL when no row contributed a field (never a fabricated 0).
     """
     conds = _time_conds(start_ts, end_ts)
     where = ("WHERE " + " AND ".join(sql for sql, _ in conds)) if conds else ""
@@ -1247,8 +1374,6 @@ def q_models(conn, start_ts=None, end_ts=None):
            SUM(COALESCE(credits,0)) AS credits,
            SUM(COALESCE(original_credits,0)) AS original_credits,
            {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
-           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
-           {_AGG_UNMEASURED_EXPR} AS unmeasured,
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
            {_AGG_TOTAL_EXPR} AS total_tokens,
            {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
@@ -1258,20 +1383,21 @@ def q_models(conn, start_ts=None, end_ts=None):
            COUNT(DISTINCT session_id) AS sessions
     FROM model_calls {where}
     GROUP BY model, provider
-    ORDER BY credits DESC, {_AGG_TOTAL_EXPR} DESC, model
+    ORDER BY usage_total_tokens DESC, credits DESC, total_tokens DESC, model
     """, params).fetchall()
 
 
-def q_usage_model_stats(conn, start_ts=None, end_ts=None, order_by="total_tokens"):
+def q_usage_model_stats(conn, start_ts=None, end_ts=None,
+                        order_by="usage_total_tokens"):
     """Per-model rollup for one window (the Dashboard's Top models panel).
 
-    ``order_by`` is whitelisted through ``_Q_MODEL_STATS_ORDER``: the panel
-    ranks by API total, and a model that reported no tokens (a Qoder-hosted
-    route carrying credits only) is ranked by what it did report rather than
-    dropped.
+    The default order is the one the panel displays: Usage Total, then credits,
+    then API total. Ranking by API tokens while printing credits put a
+    1.8M-token / 2,039-credit model below a 68M-token / 266-credit one.
     """
     where, params = _where(start_ts, end_ts, "model_calls")
-    order = _Q_MODEL_STATS_ORDER.get(order_by, _Q_MODEL_STATS_ORDER["total_tokens"])
+    order = _Q_MODEL_STATS_ORDER.get(
+        order_by, _Q_MODEL_STATS_ORDER["usage_total_tokens"])
     return conn.execute(f"""
     SELECT model, provider,
            COUNT(*) AS requests,
@@ -1282,11 +1408,9 @@ def q_usage_model_stats(conn, start_ts=None, end_ts=None, order_by="total_tokens
            SUM(cache_read_tokens) AS cache_hit,
            {_AGG_CACHE_MISS_EXPR} AS cache_miss,
            SUM(cache_creation_tokens) AS cache_write,
-           SUM(credits) AS credits,
+           SUM(COALESCE(credits,0)) AS credits,
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
-           {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
-           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
-           {_AGG_UNMEASURED_EXPR} AS unmeasured
+           {_AGG_TOKEN_COVERED_EXPR} AS token_covered
     FROM model_calls {where}
     GROUP BY model, provider ORDER BY {order}, model
     """, params).fetchall()
@@ -1332,6 +1456,11 @@ def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None,
                COALESCE(r.requests, 0) AS requests,
                r.input_tokens, r.output_tokens,
                r.cache_read_tokens, r.cache_creation_tokens,
+               CASE WHEN r.input_tokens IS NOT NULL
+                          AND r.output_tokens IS NOT NULL
+                    THEN r.input_tokens + r.output_tokens
+                         + COALESCE(r.cache_read_tokens, 0)
+                    ELSE NULL END AS usage_total_tokens,
                r.credits, COALESCE(r.credits_carried, 0) AS credits_carried,
                COALESCE(r.token_covered, 0) AS token_covered,
                r.peak_context
@@ -1424,6 +1553,7 @@ def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None,
                (SELECT SUM(output_tokens) FROM req) AS output_tokens,
                (SELECT SUM(cache_read_tokens) FROM req) AS cache_read_tokens,
                (SELECT SUM(cache_creation_tokens) FROM req) AS cache_creation_tokens,
+               (SELECT {_AGG_USAGE_TOTAL_EXPR} FROM req) AS usage_total_tokens,
                (SELECT SUM(credits) FROM req) AS credits,
                (SELECT {_AGG_CREDITS_CARRIED_EXPR} FROM req) AS credits_carried,
                (SELECT {_AGG_TOKEN_COVERED_EXPR} FROM req) AS token_covered,
@@ -1454,9 +1584,6 @@ def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None,
                {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
                {_AGG_CACHE_MISS_EXPR} AS cache_miss_tokens,
                {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
-               {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
-               {_AGG_UNMEASURED_EXPR} AS unmeasured,
-               {_AGG_TOKEN_COVERED_EXPR} * 1.0 / COUNT(*) AS token_coverage,
                MIN(ts) AS first_used, MAX(ts) AS last_used,
                COUNT(DISTINCT session_id) AS sessions
         FROM {table} WHERE {where}
@@ -1502,50 +1629,6 @@ def q_compaction_summary(conn, start_ts=None, end_ts=None) -> dict:
     return data
 
 
-def q_capture_timeline(conn, start_ts=None, end_ts=None) -> dict:
-    """When token capture began, and coverage before versus since.
-
-    The first token-covered response is a fact about the whole index, not the
-    window: coverage looks broken on this machine only because 40k hosted calls
-    predate the day the CLI was run with ``QODERCN_EXPOSE_TOKEN_USAGE=1``. The
-    split names that honestly — ``before_requests`` are structurally
-    unmeasurable, while ``since_coverage`` is the rate the capture actually
-    achieves. All-time and windowed callers get the same first timestamp.
-    """
-    try:
-        first_ts = conn.execute(
-            f"SELECT MIN(ts) FROM model_calls WHERE {_TOKEN_COVERED_EXPR}"
-        ).fetchone()[0]
-    except sqlite3.OperationalError:
-        first_ts = None
-    empty = {"first_ts": None, "requests": 0, "covered": 0,
-             "before_requests": 0, "since_requests": 0, "since_covered": 0,
-             "since_coverage": None}
-    if first_ts is None:
-        return empty
-    where, params = _where(start_ts, end_ts, "model_calls")
-    row = conn.execute(f"""
-    SELECT COUNT(*) AS requests,
-           {_AGG_TOKEN_COVERED_EXPR} AS covered,
-           SUM(CASE WHEN ts < ? THEN 1 ELSE 0 END) AS before_requests,
-           SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS since_requests,
-           SUM(CASE WHEN ts >= ? AND ({_TOKEN_COVERED_EXPR})
-                    THEN 1 ELSE 0 END) AS since_covered
-    FROM model_calls {where}
-    """, [first_ts, first_ts, first_ts] + params).fetchone()
-    since = row["since_covered"] or 0
-    requests = row["since_requests"] or 0
-    return {
-        "first_ts": first_ts,
-        "requests": row["requests"] or 0,
-        "covered": row["covered"] or 0,
-        "before_requests": row["before_requests"] or 0,
-        "since_requests": requests,
-        "since_covered": since,
-        "since_coverage": token_coverage(since, requests),
-    }
-
-
 def q_project_board(conn, start_ts=None, end_ts=None, limit=None):
     """Per-project cost and usage for the Dashboard's project ledger."""
     where, params = _where(start_ts, end_ts, "m")
@@ -1557,6 +1640,7 @@ def q_project_board(conn, start_ts=None, end_ts=None, limit=None):
                COUNT(DISTINCT m.session_id) AS sessions,
                SUM(m.input_tokens)  AS input_tokens,
                SUM(m.output_tokens) AS output_tokens,
+               {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
                SUM(m.credits) AS credits,
                {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
                {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
@@ -1576,13 +1660,13 @@ def q_project_board(conn, start_ts=None, end_ts=None, limit=None):
         GROUP BY c.project
     )
     SELECT r.project, r.requests, r.sessions,
-           r.input_tokens, r.output_tokens, r.credits,
+           r.input_tokens, r.output_tokens, r.usage_total_tokens, r.credits,
            r.credits_carried, r.token_covered, r.peak_context,
            r.first_used, r.last_used,
            COALESCE(cm.compactions, 0) AS compactions,
            COALESCE(cm.compacted_tokens, 0) AS compacted_tokens
     FROM req r LEFT JOIN cmp cm ON cm.project IS r.project
-    ORDER BY r.credits DESC, r.requests DESC
+    ORDER BY r.usage_total_tokens DESC, r.credits DESC, r.requests DESC
     """
     if limit:
         sql += f" LIMIT {int(limit)}"
@@ -1622,6 +1706,7 @@ def q_project_summary(conn, project, start_ts=None, end_ts=None) -> dict:
            COUNT(DISTINCT m.session_id) AS sessions,
            SUM(m.input_tokens)  AS input_tokens,
            SUM(m.output_tokens) AS output_tokens,
+           {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
            SUM(m.credits) AS credits,
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
            {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
@@ -1632,8 +1717,6 @@ def q_project_summary(conn, project, start_ts=None, end_ts=None) -> dict:
     FROM model_calls m {mc_where}
     """, cp_params + [project] + mc_params + [project]).fetchall()[0]
     data = dict(row)
-    data["token_coverage"] = token_coverage(data["token_covered"] or 0,
-                                            data["requests"] or 0)
     data["compacted_tokens"] = data["compacted_tokens"] or 0
     data["compactions"] = data["compactions"] or 0
     return data
@@ -1652,6 +1735,7 @@ def q_project_sessions(conn, project, start_ts=None, end_ts=None,
                COUNT(*) AS requests,
                SUM(m.input_tokens)  AS input_tokens,
                SUM(m.output_tokens) AS output_tokens,
+               {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
                SUM(m.credits) AS credits,
                {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
                {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
@@ -1670,8 +1754,8 @@ def q_project_sessions(conn, project, start_ts=None, end_ts=None,
         GROUP BY c.session_id
     )
     SELECT r.session_id, r.requests, r.input_tokens, r.output_tokens,
-           r.credits, r.credits_carried, r.token_covered, r.peak_context,
-           r.first_used, r.last_used,
+           r.usage_total_tokens, r.credits, r.credits_carried, r.token_covered,
+           r.peak_context, r.first_used, r.last_used,
            COALESCE(cm.compactions, 0) AS compactions,
            COALESCE(cm.compacted_tokens, 0) AS compacted_tokens,
            (SELECT s.model FROM sessions s WHERE s.session_id = r.session_id)
@@ -1685,13 +1769,14 @@ def q_project_sessions(conn, project, start_ts=None, end_ts=None,
 
 
 def q_session_calls(conn, session_id, start_ts=None, end_ts=None, limit=200):
-    """Every response in one session, oldest first, with its launching agent."""
+    """The newest responses in one session, with the agent that launched each."""
     where, params = _where(start_ts, end_ts, "m")
     where = (where + " AND " if where else "WHERE ") + "m.session_id = ?"
     return conn.execute(f"""
     SELECT m.ts, m.model, m.provider, m.credits,
            m.input_tokens, m.output_tokens, m.cache_read_tokens,
            m.cache_creation_tokens, m.context_usage_ratio, m.is_sidechain,
+           {_USAGE_TOTAL_EXPR} AS usage_total_tokens,
            {_TOTAL_EXPR} AS total_tokens,
            {_CACHE_MISS_EXPR} AS cache_miss_tokens,
            a.agent_type,
@@ -1699,9 +1784,16 @@ def q_session_calls(conn, session_id, start_ts=None, end_ts=None, limit=200):
     FROM model_calls m
     LEFT JOIN agent_usage a ON a.call_id = m.parent_call_id
     {where}
-    ORDER BY m.ts, m.message_id
+    ORDER BY m.ts DESC, m.message_id DESC
     LIMIT ?
     """, params + [session_id, limit]).fetchall()
+
+
+def q_session_summary(conn, session_id, start_ts=None, end_ts=None):
+    """Totals for every response in one session, not only the shown tail."""
+    where, params = _where(start_ts, end_ts, "m")
+    where = (where + " AND " if where else "WHERE ") + "m.session_id = ?"
+    return _request_summary(conn, where, params + [session_id])
 
 
 def q_call_detail(conn, kind, key):
@@ -1782,7 +1874,7 @@ _AGG_CACHE_MISS_EXPR = f"SUM({_CACHE_MISS_EXPR})"
 # shape the CLI writes for a hosted call without the token flag, so it means
 # "no token was reported", not "used nothing". One expression for every query
 # that shows a token number, and the Python half below, so a rendered `—` and
-# the coverage count can never disagree about the same row.
+# the reported-row count can never disagree about the same row.
 _TOKEN_COVERED_EXPR = (
     "COALESCE(input_tokens,0) > 0 OR COALESCE(output_tokens,0) > 0"
     " OR COALESCE(cache_read_tokens,0) > 0"
@@ -1790,15 +1882,6 @@ _TOKEN_COVERED_EXPR = (
 )
 _AGG_TOKEN_COVERED_EXPR = (
     f"SUM(CASE WHEN {_TOKEN_COVERED_EXPR} THEN 1 ELSE 0 END)")
-# The other two states partition every row with the one above: a row that did
-# not report a token either carried credits (the hosted legacy shape) or
-# carried neither (unmeasured). They are row counts, never token estimates.
-_AGG_CREDITS_ONLY_EXPR = (
-    f"SUM(CASE WHEN NOT ({_TOKEN_COVERED_EXPR}) AND credits IS NOT NULL"
-    " THEN 1 ELSE 0 END)")
-_AGG_UNMEASURED_EXPR = (
-    f"SUM(CASE WHEN NOT ({_TOKEN_COVERED_EXPR}) AND credits IS NULL"
-    " THEN 1 ELSE 0 END)")
 
 # The credits-side mirror of the same problem. A BYOK route carries no `credits`
 # field at all, so `SUM(COALESCE(credits,0))` over such a route is `0` — which
@@ -1831,24 +1914,12 @@ def row_reports_tokens(row) -> bool:
     return any((row[f] or 0) > 0 for f in _TOKEN_FIELDS if f in keys)
 
 
-def token_coverage(covered, requests):
-    """Share of requests that reported any token, or None for an empty window.
-
-    Coverage is a share of *requests*, not of token volume: there is no honest
-    way to measure the tokens a legacy hosted call hid, so the tool reports how
-    many calls the token sums actually describe and stops there.
-    """
-    if not requests:
-        return None
-    return covered / requests
-
-
 _Q_MODEL_STATS_ORDER = {
-    "total_tokens": "total_tokens DESC",
-    "usage_total_tokens": "usage_total_tokens DESC",
-    "requests": "requests DESC",
-    "credits": "credits DESC",
-    "cache_hit": "cache_hit DESC",
+    "usage_total_tokens": "usage_total_tokens DESC, credits DESC, total_tokens DESC",
+    "total_tokens": "total_tokens DESC, credits DESC",
+    "requests": "requests DESC, usage_total_tokens DESC",
+    "credits": "credits DESC, usage_total_tokens DESC",
+    "cache_hit": "cache_hit DESC, usage_total_tokens DESC",
 }
 
 
@@ -1873,13 +1944,16 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
            SUM(COALESCE(credits,0)) AS credits,
            SUM(COALESCE(original_credits,0)) AS original_credits,
            {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
-           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
-           {_AGG_UNMEASURED_EXPR} AS unmeasured,
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
+           {_AGG_TOTAL_EXPR} AS total_tokens,
+           {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
            SUM(CASE WHEN parent_call_id IS NOT NULL THEN 1 ELSE 0 END)
                AS agent_requests,
            SUM(CASE WHEN parent_call_id IS NOT NULL
                     THEN COALESCE(credits, 0) END) AS agent_credits,
+           SUM(CASE WHEN parent_call_id IS NOT NULL
+                    AND credits IS NOT NULL THEN 1 ELSE 0 END)
+               AS agent_credits_carried,
            MAX(context_usage_ratio) AS peak_context,
            COUNT(DISTINCT session_id) AS sessions,
            COUNT(DISTINCT project) AS projects
@@ -1888,6 +1962,11 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
     tc_where, tc_params = _where(start_ts, end_ts, "tool_calls")
     calls = conn.execute(f"""
     SELECT COUNT(*) AS tool_calls,
+           SUM(CASE WHEN category='builtin' THEN 1 ELSE 0 END) AS builtin_tool_calls,
+           SUM(CASE WHEN category='builtin' AND status='error'
+                    THEN 1 ELSE 0 END) AS builtin_failed,
+           SUM(CASE WHEN category='builtin' AND status IS NULL
+                    THEN 1 ELSE 0 END) AS builtin_pending,
            SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS failed,
            SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS pending,
            CAST(AVG(CASE WHEN status IS NOT NULL THEN duration_ms END) AS INTEGER) AS avg_ms,
@@ -1915,49 +1994,46 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
         f"SELECT COUNT(DISTINCT plugin) AS n FROM plugin_usage {pl_where}",
         pl_params,
     ).fetchone()
+    cmd_where, cmd_params = _where(start_ts, end_ts, "commands")
+    commands = conn.execute(
+        f"SELECT COUNT(*) AS n FROM commands {cmd_where}", cmd_params
+    ).fetchone()
     comp = q_compaction_summary(conn, start_ts, end_ts)
-    capture = q_capture_timeline(conn, start_ts, end_ts)
     return {
-        # The Dashboard's four call counts, under the names the panels read.
+        # The Dashboard's call counts, partitioned: builtin tools, skills,
+        # agent runs, MCP calls and commands are disjoint sets of tool_use rows.
         "skills": skills["n"] or 0,
         "agents": agents["n"] or 0,
         "mcp": mcp["n"] or 0,
         "plugins": plugins["n"] or 0,
+        "commands": commands["n"] or 0,
         "requests": tok["requests"] or 0,
-        # Token sums stay NULL when nothing contributed: an empty window must
-        # read `-`, and a hosted-only window's literal zeros read `—` through
-        # the coverage count, never a fabricated total.
+        # Token sums stay NULL when nothing contributed; a hosted-only window's
+        # literal zeros read `—` through the row-reports-token predicate.
         "input_tokens": tok["input_tokens"],
         "output_tokens": tok["output_tokens"],
         "cache_read_tokens": tok["cache_read_tokens"],
         "cache_creation_tokens": tok["cache_creation_tokens"],
+        "total_tokens": tok["total_tokens"],
+        "usage_total_tokens": tok["usage_total_tokens"],
         "credits": tok["credits"] or 0.0,
         "original_credits": tok["original_credits"] or 0.0,
         "token_covered": tok["token_covered"] or 0,
-        "credits_only": tok["credits_only"] or 0,
-        "unmeasured": tok["unmeasured"] or 0,
-        "token_coverage": token_coverage(tok["token_covered"] or 0,
-                                         tok["requests"] or 0),
         "credits_carried": tok["credits_carried"] or 0,
         "peak_context": tok["peak_context"],
         "agent_requests": tok["agent_requests"] or 0,
         "agent_credits": tok["agent_credits"] or 0.0,
+        "agent_credits_carried": tok["agent_credits_carried"] or 0,
         "model_sessions": tok["sessions"] or 0,
         "model_projects": tok["projects"] or 0,
-        # Context pressure / compaction tax, and the capture split. Both are
-        # facts about the same window as every other number here.
         "compactions": comp["compactions"],
         "compaction_sessions": comp["sessions"],
         "compacted_tokens": comp["compacted_tokens"],
         "compaction_avg_ms": comp["avg_ms"],
-        "first_token_ts": capture["first_ts"],
-        "capture_requests": capture["requests"],
-        "capture_covered": capture["covered"],
-        "capture_before": capture["before_requests"],
-        "capture_since_requests": capture["since_requests"],
-        "capture_since_covered": capture["since_covered"],
-        "capture_since_coverage": capture["since_coverage"],
         "tool_calls": calls["tool_calls"] or 0,
+        "builtin_tool_calls": calls["builtin_tool_calls"] or 0,
+        "builtin_failed": calls["builtin_failed"] or 0,
+        "builtin_pending": calls["builtin_pending"] or 0,
         "tool_failed": calls["failed"] or 0,
         "tool_pending": calls["pending"] or 0,
         "tool_avg_ms": calls["avg_ms"] or 0,
@@ -1985,6 +2061,8 @@ def q_usage_summary(conn, start_ts, end_ts) -> dict:
     where, params = _where(start_ts, end_ts, "model_calls")
     row = conn.execute(f"""
     SELECT COUNT(*) AS requests,
+           COUNT(DISTINCT session_id) AS sessions,
+           COUNT(DISTINCT project) AS projects,
            SUM(input_tokens)  AS input_tokens,
            SUM(output_tokens) AS output_tokens,
            {_AGG_TOTAL_EXPR} AS total_tokens,
@@ -1995,20 +2073,19 @@ def q_usage_summary(conn, start_ts, end_ts) -> dict:
            SUM(credits) AS credits,
            SUM(original_credits) AS original_credits,
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
-           SUM(CASE WHEN input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_input,
-           SUM(CASE WHEN output_tokens IS NULL THEN 1 ELSE 0 END) AS missing_output,
+           SUM(CASE WHEN parent_call_id IS NOT NULL THEN 1 ELSE 0 END)
+               AS agent_requests,
+           SUM(CASE WHEN parent_call_id IS NOT NULL
+                    THEN COALESCE(credits, 0) END) AS agent_credits,
+           SUM(CASE WHEN parent_call_id IS NOT NULL
+                    AND credits IS NOT NULL THEN 1 ELSE 0 END)
+               AS agent_credits_carried,
            MAX(context_usage_ratio) AS peak_context,
-           {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
-           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
-           {_AGG_UNMEASURED_EXPR} AS unmeasured
+           {_AGG_TOKEN_COVERED_EXPR} AS token_covered
     FROM model_calls {where}
     """, params).fetchone()
     data = dict(row)
     data["token_covered"] = data["token_covered"] or 0
-    data["credits_only"] = data["credits_only"] or 0
-    data["unmeasured"] = data["unmeasured"] or 0
-    data["token_coverage"] = token_coverage(data["token_covered"],
-                                            data["requests"] or 0)
     return data
 
 
@@ -2050,18 +2127,26 @@ def q_usage_daily(conn, start_ts=None, end_ts=None):
 
 
 def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
-    """How the tool calls in the window behaved (the Runtime panel).
+    """How the builtin tool calls in the window behaved (the Runtime panel).
 
-    ``completed`` and ``incomplete`` split the ``calls`` total exactly: Qoder
-    leaves a call without a status when its paired ``tool_result`` never
-    arrived, which is a fact about the transcript, not about the tool. ``avg_ms``
-    averages only the calls that reported a duration (NULL when nothing ran,
-    never a fabricated 0); ``sessions``/``projects`` are DISTINCT ids.
+    Restricted to ``category='builtin'`` so Completed + Failed + Pending is the
+    same population as the Dashboard's "Tool calls" KPI; skills, agent runs and
+    MCP calls carry their own status columns on their tabs. ``completed`` and
+    ``incomplete`` split the ``calls`` total exactly: Qoder leaves a call without
+    a status when its paired ``tool_result`` never arrived, which is a fact about
+    the transcript, not about the tool. ``avg_ms`` averages only the calls that
+    reported a duration (NULL when nothing ran, never a fabricated 0);
+    ``sessions``/``projects`` are DISTINCT ids.
     """
     where, params = _where(start_ts, end_ts, "tool_calls")
+    where = (where + " AND " if where else "WHERE ") + "category = 'builtin'"
     row = conn.execute(f"""
     SELECT COUNT(*) AS calls,
            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+           SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN status = 'backgrounded' THEN 1 ELSE 0 END) AS backgrounded,
+           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
            SUM(CASE WHEN status IS NULL OR status <> 'completed' THEN 1 ELSE 0 END)
                AS incomplete,
            CAST(AVG(CASE WHEN status IS NOT NULL THEN duration_ms END) AS INTEGER)
@@ -2124,10 +2209,13 @@ def q_overview(conn) -> dict:
 
     return {
         "tool_calls": one("SELECT COUNT(*) FROM tool_calls"),
+        "builtin_tool_calls": one(
+            "SELECT COUNT(*) FROM tool_calls WHERE category = 'builtin'"),
         "skills": one("SELECT COUNT(*) FROM skill_usage"),
         "agents": one("SELECT COUNT(*) FROM agent_usage"),
         "plugins_used": one("SELECT COUNT(DISTINCT plugin) FROM plugin_usage"),
         "mcp": one("SELECT COUNT(*) FROM mcp_usage"),
+        "commands": one("SELECT COUNT(*) FROM commands"),
         "model_responses": one("SELECT COUNT(*) FROM model_calls"),
         "compactions": one("SELECT COUNT(*) FROM compactions"),
         "unparsed_records": one("SELECT SUM(count) FROM unparsed"),
