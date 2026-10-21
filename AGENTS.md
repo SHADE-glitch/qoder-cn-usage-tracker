@@ -32,7 +32,7 @@ transcripts, but the TUI also writes: `on_mount` runs `db.ensure_schema()` and
 its auto-sync worker calls the same indexer the CLI does. Anything that assumes
 "the TUI is read-only" is wrong — reason about locks accordingly. The headless
 CLI is read-only except for its explicit maintenance subcommands (`backup`,
-`restore`, `format --write`).
+`restore`, `vacuum`, `format --write`).
 
 `bin/qcut` is a bash dispatcher. **It is bash on purpose**: it must still run and
 print a useful error when the TUI venv is missing or broken, so it cannot depend
@@ -182,22 +182,35 @@ tool runs from a checkout, so the version only needs to move when a documented c
   inferred from the model *name*: a BYOK alias can look built-in (`qcfmodel`
   beside `qfmodel`). `test_a_model_alias_that_looks_builtin_is_still_tagged_from_its_route`
   is the case that holds this.
-- **Tokens and credits are stored as reported and never converted.** Qoder's own
-  routes report credits and a literal 0 for every token field; a BYOK route is the
-  reverse — and it carries **no `credits` field at all**, so it is stored NULL, not
-  0. Store the 0, store the credits, and let the UI name which one is in play. Do
-  not derive tokens from credits, or credits from tokens.
+- **Tokens and credits are stored as reported and never converted.** A Qoder-hosted
+  route with `QODERCN_EXPOSE_TOKEN_USAGE` unset stores real credits and a literal 0
+  in every token field; with the flag set it stores real tokens and **may also
+  carry credits in the same row**; a BYOK route carries tokens and **no `credits`
+  field at all**, so it is stored NULL, not 0. Store what was written. Do not
+  derive tokens from credits or `context_usage_ratio`, and do not derive credits
+  from tokens. Zeros already in the transcripts are history and cannot be repaired
+  by qcut — the only lever is the CLI's own environment at call time.
+- **Every request is in exactly one coverage state.** `token-covered` = at least
+  one token field > 0; `credits-only` = no token > 0 and `credits IS NOT NULL`;
+  `unmeasured` = no token > 0 and `credits IS NULL`. They partition the requests:
+  `token_covered + credits_only + unmeasured = requests`. `token_coverage(covered,
+  requests)` is a share of **requests**, never of token volume, and is `None` for
+  an empty window. One SQL expression family (`_TOKEN_COVERED_EXPR` and its three
+  aggregate wrappers) and one Python predicate (`row_reports_tokens`) drive every
+  surface; `q_usage_kpi`, `q_usage_summary`, `q_models` and `q_entity_summary`
+  all carry the three counts so no surface can invent a fourth version.
 - **A route-level zero is drawn `—`, an absent value `-`, and a non-zero is always
   shown.** Storage keeps the 0 (the rule above); the *display* must not present it
-  as a measurement — a window of only Qoder-hosted responses sums to `0` input
+  as a measurement — a window of only legacy hosted responses sums to `0` input
   tokens while billing real credits, and printing that `0` claims "used nothing".
-  One predicate decides it: `db._TOKENS_REPORTED_EXPR` in SQL and
-  `db.row_reports_tokens` in Python, which is what feeds both the `—` and the
-  `Tok reported` column, so they cannot tell two stories. The credits axis has the
-  mirror predicate (`credits_carried`): summing a route that never carried the
-  field gives `0`, which reads "billed nothing" and should read `-`. Both renderers
-  guard on the value too (`not reported and not value`), so a wrong flag can
-  suppress a zero but can never swallow a measurement —
+  The `—` decision is `token_covered > 0` at aggregate level (so a mixed model
+  shows its partial sum **and** a coverage figure) and `row_reports_tokens` per
+  row; the `Coverage` column is the same predicate as a share, so the column and
+  the dashes cannot tell two stories. The credits axis has the mirror predicate
+  (`credits_carried`): summing a route that never carried the field gives `0`,
+  which reads "billed nothing" and should read `-`. Both renderers guard on the
+  value too (`not reported and not value`), so a wrong flag can suppress a zero
+  but can never swallow a measurement —
   `test_usage.py::TokenReportingTest` and `test_tui.py::TokenDashTest` hold this,
   and `test_fmt_tok_is_the_same_function_in_both_renderers` pins the TUI and the
   headless CLI against each other.
@@ -206,6 +219,12 @@ tool runs from a checkout, so the version only needs to move when a documented c
   (its `q_usage_kpi` flattens NULL to 0, and there is no route there to describe).
   Do not "unify" one side without moving the other, or the same window answers
   differently per surface.
+- **qcut never edits a shell profile or the CLI's environment.** The capture flag
+  is read by the Qoder CN CLI process, not by qcut, so setting it from inside qcut
+  would be too late and out of bounds. `qcut env` is a read-only advisor: it
+  names `db.TOKEN_ENV_NAME`, reports the current process state, prints the exact
+  line to add, and shows the index's coverage. It works with an absent database
+  and must not create one. `install.sh` does not touch profiles either.
 - **"No such thing" and "nothing in this window" are different answers.** An
   aggregate over `WHERE name = ?` cannot tell them apart — both return
   `COUNT(*) = 0`, so an unknown entity printed as a confident report about something
@@ -220,12 +239,14 @@ tool runs from a checkout, so the version only needs to move when a documented c
   never ships an empty panel: an empty token panel reads as "0 tokens" or as a broken
   widget, and neither is true. Where a slot's meaning is narrower here than in the
   sibling, the note line above the table says so in the same round —
-  `Tokens` reports **credits** alongside the tokens a route actually carried (a BYOK
-  route carries no `credits` field at all, so it is stored NULL, not 0), and `Usage` is
-  per-response only where a response was recorded. Both tables carry a one-word
-  `Route` (`Built-in` / `3P`) beside `Provider`, derived from the same stored value so
-  the family and the channel cannot disagree. The caveat is part of the contract;
-  delete it and the panel starts lying.
+  `Tokens` reports **credits**, a `Coverage` share and the tokens a route actually
+  carried (a BYOK route carries no `credits` field at all, so it is stored NULL, not
+  0), and `Usage` is per-response only where a response was recorded; its `—` means
+  that call reported no token, and its note says credits and tokens can coexist and
+  points at `qcut env`. Both tables carry a one-word `Route` (`Built-in` / `3P`)
+  beside `Provider`, derived from the same stored value so the family and the channel
+  cannot disagree. The caveat is part of the contract; delete it and the panel starts
+  lying.
   The *set* is machine-checked too, and against literals rather than against
   `TABS`: `scripts/qcut-tui.py` builds its panes in a loop over that tuple, so
   comparing the built panes back to it holds for any tab set at all — including
@@ -272,9 +293,10 @@ tool runs from a checkout, so the version only needs to move when a documented c
   bullets and the first column of the tab table; they document the tabs, they are
   not the tab labels. `test_tui.py::ChromeTest` pins the two shape facts.
 - **A flag is registered only where a command reads it.** `--limit` belongs to the
-  six reports that pass it to a query, and `--range` only to `show`, which is the
-  one command with a window argument. A flag the parser accepts and the report
-  ignores reads as a filter that worked.
+  seven reports that pass it to a query (`tools`, `skills`, `agents`, `mcp`,
+  `commands`, `recent`, `show`), and `--range` only to `show`, which is the one
+  command with a window argument. A flag the parser accepts and the report ignores
+  reads as a filter that worked.
 - **Settings are read once, in one place.** `db.load_config()` resolves
   environment > file > `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`,
   one in `ENV_NAMES`, one in `_BOUNDS`, and one assignment where the value is
@@ -402,22 +424,24 @@ python3 -m unittest scripts.tests.test_privacy
 Re-measure before restating any of these; the commands are in
 [`docs/maintenance/`](docs/maintenance/).
 
-- 173 transcript files / 362 MB → 5.17 s cold, 0.10 s warm, 133 MB peak RSS,
-  19 MB database. Measured 2026-10-12; the tree is the owner's live transcripts,
-  so the file count moves between two runs in the same minute.
-- A tool result with no `toolUseResult.kind` is 14,770 of 33,531 results on this
+- 489 transcript files / 522 MB → 6.79 s cold, 0.10 s warm, 133,928 KB peak RSS,
+  26,189,824-byte database. Measured 2026-10-21 on Qoder CN CLI `1.1.75`; the tree
+  is the owner's live transcripts, so the file count moves between two runs in the
+  same minute (a scan seconds after this index already saw more usage rows).
+- A tool result with no `toolUseResult.kind` is 19,816 of 46,011 results on this
   machine. Treating those as "pending" reported finished work as unfinished.
 - `input_tokens` is the whole prompt and `cache_read_tokens` a subset of it: the
   largest single request here is 357,240 in / 358,703 API total, but re-adding the
   cache read makes it 715,055 — past the model's 400k window. That is why
   `Usage Total` is shown *beside* `API Total` and never instead of it.
-- 133 of 173 transcript files are `agent-a<Type>-<hash>.jsonl` subagent
+- 444 of 489 transcript files are `agent-a<Type>-<hash>.jsonl` subagent
   transcripts carrying the parent session id.
-- The route split is complementary, not partially missing: 29,557 responses carry
-  a real credit and a literal `0` in all four token fields, 71 carry real tokens
-  and **no `credits` field**. Asking "did this row report a token?" by
-  `credits IS NULL` and by "some token field is non-zero" disagrees on **0 rows**
-  — which is what lets one predicate drive both the `—` and `Tok reported`.
+- Coverage on the legacy index is **71 token-covered, 40,473 credits-only, 0
+  unmeasured of 40,544 requests** (0.2%): every hosted call predates the capture
+  flag, and the 71 are one BYOK route. Zero rows carry both credits and tokens
+  *here*, but that is history — the flag makes coexistence the normal shape for a
+  new hosted call. Re-measure with `qcut stats` / `qcut models` rather than
+  quoting these.
 
 ## Listed on the GitHub profile
 
@@ -446,9 +470,10 @@ wrong here, and misses one:
 
 - **The product name is part of the promise.** "CodeBuddy Code" in a Qoder repository's About is a
   copy-paste slip a reader cannot resolve.
-- **"credits vs tokens" is not decoration.** 29,557 responses on this machine carry a real credit and
-  a literal `0` in all four token fields; 71 carry real tokens and no credits field at all. An About
-  that says only "token analytics" describes the 71 rows and misrepresents the other 29,557.
+- **"credits vs tokens" is not decoration.** 40,473 responses on this machine carry a real credit and
+  a literal `0` in all four token fields; only 71 carry real tokens. An About that says only "token
+  analytics" describes a fraction of the index, so it must pair tokens with the coverage figure (or
+  name credits too) rather than imply every call is measured.
 - **What *may* be copied** is the strongest true claim here: this repository really does store
   metadata only — `test_privacy.py::MetadataOnlyTest` scans sentinels across every text column of
   every table — so "no message bodies" is true, and worth saying.

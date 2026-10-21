@@ -4,10 +4,11 @@
 #   qcut                 launch the interactive TUI (eight tabs)
 #   qcut sync            index new Qoder CN transcripts into the database
 #   qcut sync --full     rebuild the database from scratch
-#   qcut stats|tools|skills|agents|plugins|mcp|models|show|recent|inventory|export|health
+#   qcut stats|tools|skills|agents|plugins|mcp|models|commands|show|recent|inventory|export|health|env
 #                        headless reports (no TUI, stdlib only)
 #   qcut backup          snapshot the database before a risky step
 #   qcut restore         list snapshots, or restore one: qcut restore NAME
+#   qcut vacuum          compact and verify the database (snapshot taken first)
 #   qcut format          the Qoder CN fields and paths this tool depends on
 #
 # Written in bash on purpose: it must still run and print a useful error when

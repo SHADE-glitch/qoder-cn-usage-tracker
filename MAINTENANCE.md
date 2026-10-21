@@ -12,12 +12,27 @@ prints "done", and CI stays green. The format surface this tool depends on is re
 code — regenerate it with `qcut format --write` and change the registry and the handler **in the
 same commit**.
 
-The second risk is specific to this tool and easy to get wrong: the two measure axes are
-**complementary**, not partially missing. Qoder's own routes report credits and a literal `0` for
-every token field; a BYOK route reports tokens and no `credits` field at all. The reading rules
-(`—` / `-` / a number, and the one predicate behind them) are in `AGENTS.md` § Hard rules; the
+The second risk is specific to this tool and easy to get wrong: tokens and credits are **not
+complementary**. With `QODERCN_EXPOSE_TOKEN_USAGE=1` in the CLI's own environment, a hosted response
+carries real tokens **and** credits; without it, the same route carries credits and a literal `0` in
+every token field, and qcut cannot repair that history. Coverage is the share of *requests* that
+reported any token — never a share of token volume, and never estimated from credits. The reading
+rules (`—` / `-` / a number, and the one predicate behind them) are in `AGENTS.md` § Hard rules; the
 measured split is in [`docs/maintenance/baseline.md`](docs/maintenance/baseline.md). Never convert
 one axis into the other.
+
+## After a Qoder CN CLI upgrade
+
+1. Sync into a throwaway store (`QCUT_DB=/tmp/qcut-check.db qcut sync --quiet`) and read
+   `qcut health`. A new `unparsed` reason naming a record type means the format moved: claim it as a
+   no-op or handle it, and regenerate [`qoder-format.md`](docs/maintenance/qoder-format.md) with
+   `qcut format --write` in the same change.
+2. Re-verify token capture in an **isolated shell**: set `QODERCN_EXPOSE_TOKEN_USAGE=1`, make one
+   hosted call, sync that session into the temp store, then read `qcut stats` / `qcut models`. A
+   hosted call must report non-zero input / output tokens (credits may be present too) and coverage
+   must rise. Without the flag the same call stores zero tokens — that difference is the proof the
+   variable still works.
+3. Never probe against the live index, and never write to `~/.qoder-cn`.
 
 ## Verification tiers
 - **L0** — `python3 -m unittest discover -s scripts/tests` (temp database, no host). Two suites
@@ -37,7 +52,8 @@ one axis into the other.
 find ~/.qoder-cn/projects -name '*.jsonl' | wc -l      # source file count
 QCUT_DB=/tmp/qcut-check.db qcut sync --quiet           # re-index; prints rows per table
 QCUT_DB=/tmp/qcut-check.db qcut health                 # settings, table counts, unparsed reasons
-QCUT_DB=/tmp/qcut-check.db qcut models                 # the credits/token split, per route
+QCUT_DB=/tmp/qcut-check.db qcut models                 # credits, tokens and coverage, per route
+QCUT_DB=/tmp/qcut-check.db qcut env                    # capture-flag state and index coverage
 ```
 
 `qcut health` is the first thing to read when a panel goes empty: an `unparsed` reason naming a

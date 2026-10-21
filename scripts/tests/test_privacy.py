@@ -42,8 +42,8 @@ MODULE_ALLOWLIST = {
         "__future__", "argparse", "datetime", "json", "pathlib", "qcut_db", "re",
         "sqlite3", "sys", "time"}),
     "qcut-stats.py": frozenset({
-        "__future__", "argparse", "datetime", "json", "pathlib", "qcut_db", "sys",
-        "unicodedata"}),
+        "__future__", "argparse", "datetime", "json", "os", "pathlib", "qcut_db",
+        "sqlite3", "sys", "unicodedata"}),
     "qcut-tui.py": frozenset({
         "__future__", "argparse", "datetime", "pathlib", "qcut_db", "sqlite3",
         "sys", "textual.app", "textual.binding", "textual.containers",

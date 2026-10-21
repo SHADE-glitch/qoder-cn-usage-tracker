@@ -42,6 +42,7 @@ import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 # `_helpers` puts scripts/ on sys.path, so it must be imported before qcut_db.
 from _helpers import SCRIPTS, TempTree, no_settings_env
@@ -77,7 +78,8 @@ EXPORTED = ("sessions", "model_calls", "tool_calls", "skill_usage", "agent_usage
 # Every subcommand that only reads, as the argv tail it is typed with, so one
 # list drives both the refusal and the "a report never writes" cases.
 READ_ONLY_COMMANDS = (("stats",), ("tools",), ("skills",), ("agents",), ("plugins",),
-                      ("mcp",), ("models",), ("recent",), ("inventory",), ("export",),
+                      ("mcp",), ("models",), ("commands",), ("recent",),
+                      ("inventory",), ("export",), ("env",),
                       ("show", "tool", "Bash"))
 
 
@@ -167,8 +169,10 @@ def seed_db(path):
         "INSERT INTO plugin_usage(plugin, marketplace, kind, target, session_id,"
         " project, ts) VALUES('demo-plugin','mp','skill','demo-skill','s1',"
         " '/work/demo',?)", (m(1),))
-    conn.execute("INSERT INTO commands(command, session_id, project, ts)"
-                 " VALUES('compact','s1','/work/demo',?)", (m(0),))
+    conn.executemany(
+        "INSERT INTO commands(command, session_id, project, ts) VALUES(?,?,?,?)",
+        [("compact", "s1", "/work/demo", m(0)),
+         ("review", "s1", "/work/demo", m(1))])
     conn.executemany(
         "INSERT INTO inventory(kind, name, owner_plugin, version, path, source)"
         " VALUES(?,?,?,?,?,?)",
@@ -178,7 +182,9 @@ def seed_db(path):
          ("skill", "demo-skill", "demo-plugin", "1.2.0", "/p/skills/demo", "plugin"),
          ("plugin", "demo-plugin", None, "1.2.0", "/p", "plugin"),
          ("agent", "Explore", None, None, None, "builtin"),
-         ("mcp", "idle-server", None, None, None, "user")])
+         ("mcp", "node-repl", None, None, None, "user"),
+         ("mcp", "idle-server", None, None, None, "user"),
+         ("command", "compact", None, None, None, "builtin")])
     conn.execute("INSERT INTO unparsed(reason, count) VALUES('type:NewThing', 3)")
     conn.execute("INSERT INTO sync_state(file_path, size, mtime, offset)"
                  " VALUES('/work/demo/s1.jsonl', 1, 1.0, 1)")
@@ -207,6 +213,12 @@ class StatsReportTest(unittest.TestCase):
         self.assertIn("skill invocations    2  (2 distinct)", out)
         self.assertIn("subagent calls       1  (1 types)", out)
         self.assertIn("mcp calls            1  (1 servers)", out)
+        self.assertIn("slash commands       2  (2 distinct)", out)
+        # The seed's one response reports tokens, so the token lines are real
+        # measurements and the coverage line says the sums describe all of it.
+        self.assertIn("token coverage       100.0% (1/1)", out)
+        self.assertIn("credits-only         0", out)
+        self.assertIn("unmeasured           0", out)
 
     def test_the_tools_table_scales_a_duration_to_seconds(self):
         rc, out, err = run("--db", self.t.db_path, "tools")
@@ -264,6 +276,18 @@ class StatsReportTest(unittest.TestCase):
                          ["idle-server", "—", "0", "-", "-"])
         self.assertIn(stamp(m(4)), rows["node-repl"])
 
+    def test_the_commands_table_ranks_and_limits_slash_commands(self):
+        rc, out, err = run("--db", self.t.db_path, "commands")
+        self.assertEqual(rc, 0, err)
+        rows = {line.split()[0]: line for line in body(out)}
+        self.assertEqual(set(rows), {"compact", "review"})
+        self.assertEqual(cells(rows["review"], 3),
+                         ["review", "1", "1"])
+        self.assertIn(stamp(m(1)), rows["review"])
+        rc, out, err = run("--db", self.t.db_path, "commands", "--limit", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([line.split()[0] for line in body(out)], ["compact"])
+
     def test_the_plugins_table_carries_the_version_and_the_kind(self):
         rc, out, err = run("--db", self.t.db_path, "plugins")
         self.assertEqual(rc, 0, err)
@@ -280,10 +304,11 @@ class StatsReportTest(unittest.TestCase):
         self.assertEqual(len(rows), 1, out)
         self.assertIn("ark-code-latest", rows[0])
         self.assertIn("Volcano ARK", rows[0])
+        self.assertIn("100.0% (1/1)", rows[0])
         # `api total` is input + output, and the footnote is what tells a reader
         # why the cache read is beside it and not added into it.
         self.assertRegex(out, r"api total = input \+ output")
-        self.assertRegex(out, r"tokens\? = the route reported")
+        self.assertRegex(out, r"coverage = requests that reported any non-zero token")
 
     def test_a_limit_caps_a_report_at_the_largest_rows(self):
         # `ORDER BY calls DESC, tool_name` — so capping keeps Bash and Glob (a
@@ -334,7 +359,7 @@ class StatsReportTest(unittest.TestCase):
         rows = {line.split()[1]: line for line in body(out)}
         self.assertEqual(
             set(rows), {"Bash", "Grep", "never-used", "demo-skill", "demo-plugin",
-                        "Explore", "idle-server"},
+                        "Explore", "node-repl", "idle-server", "compact"},
             "the inventory listing is the whole inventory, keyed by name")
         self.assertEqual(cells(rows["Bash"], 6),
                          ["tool", "Bash", "-", "-", "used", "2"])
@@ -342,10 +367,15 @@ class StatsReportTest(unittest.TestCase):
                          ["tool", "never-used", "-", "-", "unused", "0"])
         self.assertEqual(cells(rows["demo-skill"], 3),
                          ["skill", "demo-skill", "demo-plugin"])
-        # mcp is keyed by (server, tool), so an inventory entry has no use count
-        # to attribute: it lists, marked unused.
+        # Inventory names MCP *servers*; usage rows are (server, tool). The use
+        # count must sum the server's tools rather than look for (name, None).
+        self.assertEqual(cells(rows["node-repl"], 6),
+                         ["mcp", "node-repl", "-", "-", "used", "1"])
         self.assertEqual(cells(rows["idle-server"], 6),
                          ["mcp", "idle-server", "-", "-", "unused", "0"])
+        # Commands are matched to the slash-command table, not left unused.
+        self.assertEqual(cells(rows["compact"], 6),
+                         ["command", "compact", "-", "-", "used", "1"])
 
         rc, out, err = run("--db", self.t.db_path, "inventory", "--kind", "plugin")
         self.assertEqual(rc, 0, err)
@@ -361,7 +391,7 @@ class StatsReportTest(unittest.TestCase):
         self.assertEqual(len(data["tool_calls"]), 4)
         self.assertEqual([r["tool_name"] for r in data["tool_calls"]].count("Bash"), 2)
         self.assertEqual(data["unparsed"], [{"reason": "type:NewThing", "count": 3}])
-        self.assertEqual(len(data["inventory"]), 7)
+        self.assertEqual(len(data["inventory"]), 9)
         self.assertEqual(data["sessions"][0]["session_id"], "s1")
 
     def test_export_can_write_the_dump_to_a_named_file(self):
@@ -435,7 +465,8 @@ class CliGuardTest(unittest.TestCase):
         printed every row and `qcut models --range 7d` printed all time. Refusing
         both is the honest surface, and it is what `cbut`'s parser already does.
         """
-        for cmd in ("stats", "plugins", "models", "health", "inventory", "export"):
+        for cmd in ("stats", "plugins", "models", "health", "env", "inventory",
+                    "export"):
             with self.subTest(cmd=cmd):
                 with self.assertRaises(SystemExit) as caught:
                     run("--db", self.t.db_path, cmd, "--limit", "5")
@@ -519,7 +550,14 @@ class CliGuardTest(unittest.TestCase):
         for argv in READ_ONLY_COMMANDS:
             rc, out, err = run("--db", absent, *argv)
             with self.subTest(cmd=argv[0]):
-                self.assertEqual(rc, 1, err)
+                # `env` is the one report whose job is to explain an absent
+                # index (it is the first command a new install needs), so it
+                # answers rather than refusing — and still writes nothing.
+                if argv[0] == "env":
+                    self.assertEqual(rc, 0, err)
+                    self.assertIn("no index yet", out)
+                else:
+                    self.assertEqual(rc, 1, err)
         self.assertFalse(absent.exists(), "a read report created the index")
         self.assertFalse((self.t.root / "backups").exists())
         self.assertFalse(Path(str(absent) + "-wal").exists())
@@ -550,9 +588,39 @@ class HealthReportTest(unittest.TestCase):
         self.assertIn(f"config:   {self.t.db_path.parent / 'config.toml'} (not present)", out)
         self.assertTrue(str(self.t.root) in out)
         # Row counts per table, from `overview()`.
-        for key, value in (("tool_calls", 4), ("model_calls", 1), ("inventory", 7),
+        for key, value in (("tool_calls", 4), ("model_calls", 1), ("inventory", 9),
                            ("sync_state", 1), ("sessions", 1)):
             self.assertRegex(out, rf"{key}\s+{value}\b")
+
+    def test_health_reports_the_token_flag_and_the_all_time_coverage(self):
+        """The flag is read by the CLI, not by qcut — but health can report it.
+
+        A reader whose coverage is low needs the reason on the same screen as the
+        counts; sending them to `qcut env` from a report that already knows the
+        answer would be a detour.
+        """
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop(db.TOKEN_ENV_NAME, None)
+            rc, out, err = run("--db", self.t.db_path, "health")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"tokens:   {db.TOKEN_ENV_NAME} not set", out)
+        self.assertRegex(
+            out, r"coverage\s+100\.0% \(1/1\) token-covered · "
+                 r"0 credits-only · 0 unmeasured")
+
+        with mock.patch.dict(os.environ, {db.TOKEN_ENV_NAME: "1"}):
+            rc, out, err = run("--db", self.t.db_path, "health")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"tokens:   {db.TOKEN_ENV_NAME} set to 1", out)
+
+    def test_health_surfaces_the_flag_even_when_the_index_does_not_exist(self):
+        absent = self.t.root / "never-synced.db"
+        with mock.patch.dict(os.environ, {db.TOKEN_ENV_NAME: "1"}):
+            rc, out, err = run("--db", absent, "health")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"tokens:   {db.TOKEN_ENV_NAME} set to 1", out)
+        self.assertIn("not created yet", out)
+        self.assertFalse(absent.exists())
 
     def test_a_broken_settings_file_is_reported_and_not_raised(self):
         """`qcut health` is the command you reach for when something is wrong.
@@ -590,6 +658,45 @@ class HealthReportTest(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("unclaimed records: none", out)
         self.assertNotIn("type:NewThing", out)
+
+
+class EnvReportTest(unittest.TestCase):
+    """``qcut env`` — advice about the switch the *CLI* must see at startup."""
+
+    def setUp(self):
+        self.t = TempTree(self)
+        seed_db(self.t.db_path)
+
+    def test_unset_flag_names_the_export_and_the_index_coverage(self):
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop(db.TOKEN_ENV_NAME, None)
+            rc, out, err = run("--db", self.t.db_path, "env")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"{db.TOKEN_ENV_NAME}: not set", out)
+        self.assertIn("100.0% (1/1)", out)
+        self.assertIn(f"export {db.TOKEN_ENV_NAME}=1", out)
+        self.assertIn("does not edit shell profiles", out)
+        self.assertIn("cannot be recovered", out)
+
+    def test_a_present_flag_is_reported_as_present(self):
+        with mock.patch.dict(os.environ, {db.TOKEN_ENV_NAME: "1"}):
+            rc, out, err = run("--db", self.t.db_path, "env")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("set to 1", out)
+        self.assertIn("The flag is present in this shell", out)
+        self.assertNotIn(f"export {db.TOKEN_ENV_NAME}=1", out)
+
+    def test_a_missing_index_is_explained_and_never_created(self):
+        absent = self.t.root / "never-synced.db"
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop(db.TOKEN_ENV_NAME, None)
+            rc, out, err = run("--db", absent, "env")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("no index yet", out)
+        self.assertIn("qcut sync", out)
+        self.assertIn(f"export {db.TOKEN_ENV_NAME}=1", out)
+        self.assertFalse(absent.exists())
+        self.assertFalse((self.t.root / "backups").exists())
 
 
 class MaintenanceCliTest(unittest.TestCase):
@@ -716,6 +823,45 @@ class MaintenanceCliTest(unittest.TestCase):
         for path in pruned:
             self.assertFalse(Path(path).exists(), f"reported {path} pruned but left it")
         self.assertTrue(all(p.name not in pruned for p in left))
+
+
+class VacuumCliTest(unittest.TestCase):
+    """``qcut vacuum`` — explicit-only compaction, snapshotted and verified."""
+
+    def setUp(self):
+        self.t = TempTree(self)
+        seed_db(self.t.db_path)
+
+    def test_vacuum_snapshots_first_and_keeps_every_row(self):
+        conn = db.open_db(self.t.db_path)
+        before = db.overview(conn)
+        conn.close()
+
+        rc, out, err = run("--db", self.t.db_path, "vacuum")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("compacted", out)
+        self.assertIn("verified", out)
+        self.assertIn("quick_check ok", out)
+        snaps = [p for p in db.list_backups(self.t.db_path)
+                 if "pre-vacuum" in p.name]
+        self.assertEqual(len(snaps), 1, f"no pre-vacuum snapshot: {snaps}")
+
+        conn = db.open_db(self.t.db_path, readonly=True)
+        try:
+            self.assertEqual(db.overview(conn), before)
+            self.assertEqual(
+                conn.execute("PRAGMA quick_check").fetchone()[0], "ok")
+        finally:
+            conn.close()
+
+    def test_vacuum_refuses_a_database_that_does_not_exist(self):
+        missing = self.t.root / "fresh" / "usage.db"
+        rc, out, err = run("--db", missing, "vacuum")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no database at", err)
+        self.assertIn("qcut sync", err)
+        self.assertFalse(missing.exists())
+        self.assertEqual(db.list_backups(missing), [])
 
 
 class LauncherMaintenanceTest(unittest.TestCase):

@@ -16,7 +16,7 @@ own files. Re-verify after a Qoder update; the procedure is in [`MAINTENANCE.md`
 ## Record types
 
 - claimed: assistant, runtime-config, user, workspace-directories
-- claimed and dropped: active-leaf, attachment, custom-title, file-history-snapshot, last-prompt, system, worktree-state
+- claimed and dropped: active-leaf, ai-title, attachment, custom-title, file-history-snapshot, last-prompt, system, worktree-state
 - anything else is counted in `unparsed` as `type:<name>`
 
 ## Fields read
@@ -29,6 +29,14 @@ own files. Re-verify after a Qoder update; the procedure is in [`MAINTENANCE.md`
 - toolUseResult: commandName, isError, kind
 - tool arguments: agent_type, command, skill, subagent_type, toolName, tool_name
 - inventory JSON: baseUrl, installPath, mcpServers, plugins, providers, source, version
+
+## Token capture (environment)
+
+- variable: `QODERCN_EXPOSE_TOKEN_USAGE=1`
+- scope: the process that runs the Qoder CN CLI, not qcut
+- unset: hosted routes write a literal 0 in every token field and real credits
+- set: hosted routes write real input/output/cache-read/cache-creation tokens; credits may also be present
+- past calls: already written with zeros and cannot be recovered by qcut
 
 ## Classification
 

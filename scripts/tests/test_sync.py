@@ -12,6 +12,7 @@ import types
 import unittest
 
 from _helpers import TempTree, assistant, load_sync, tool_result, tool_use, usage
+import qcut_db as db
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 
@@ -31,6 +32,33 @@ class ModelCallTest(unittest.TestCase):
         self.assertEqual(row["output_tokens"], 20)
         self.assertEqual(row["credits"], 1.5)
         self.assertEqual(row["provider"], "builtin")
+
+    def test_a_new_model_call_is_counted_and_not_reported_as_unparsed(self):
+        """`model_calls` is a count the run reports, not a parse failure.
+
+        The filter in `_run` decides which bumped names reach `unparsed`; a
+        missing name there would make every successful response look like a
+        record qcut could not understand.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", usage=usage(input_tokens=100))])
+        summary = self.t.sync()
+        self.assertEqual(summary["counts"].get("model_calls"), 1, summary["counts"])
+        self.assertEqual(self.t.rows("SELECT * FROM unparsed"), [])
+
+    def test_a_re_read_message_is_not_counted_twice(self):
+        """A duplicate line is re-read, `INSERT OR IGNORE` keeps one row, and the
+        run must count only what it actually inserted."""
+        path = self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", usage=usage(input_tokens=100))])
+        self.t.sync()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(
+                assistant("s1", "m1", usage=usage(input_tokens=100))) + "\n")
+        second = self.t.sync()
+        self.assertNotIn("model_calls", second["counts"], second["counts"])
+        self.assertEqual(
+            self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 1)
 
     def test_a_response_without_usage_is_not_a_model_call(self):
         self.t.write("projects/-work-demo/s1.jsonl", [
@@ -735,13 +763,19 @@ class UnparsedAccountingTest(unittest.TestCase):
 
     def test_a_known_but_unused_record_type_is_claimed_not_counted(self):
         """`active-leaf` runs to tens of thousands here; counting it as
-        unparsed would make the signal useless."""
+        unparsed would make the signal useless. `ai-title` is the CLI 1.1.75
+        shape of the same thing: a generated title qcut must never read."""
         self.t.write("projects/-work-demo/s1.jsonl", [
             {"type": "active-leaf", "sessionId": "s1", "uuid": "u1"},
             {"type": "file-history-snapshot", "sessionId": "s1"},
+            {"type": "ai-title", "sessionId": "s1",
+             "title": "a sentinel that must not be stored"},
         ])
         self.t.sync()
         self.assertEqual(self.t.one("SELECT COUNT(*) c FROM unparsed")["c"], 0)
+        self.assertEqual(self.t.one(
+            "SELECT COUNT(*) c FROM sync_state")["c"], 1,
+            "the file carrying only no-op records was not consumed")
 
     def test_a_record_with_no_type_is_counted(self):
         self.t.write("projects/-work-demo/s1.jsonl", [{"sessionId": "s1"}])
@@ -854,6 +888,30 @@ class CrashSafetyTest(unittest.TestCase):
         self.assertEqual(
             self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 1,
             "the file stayed skipped after it became readable")
+
+
+class FormatDocTest(unittest.TestCase):
+    """The generated format surface must carry the capture rule."""
+
+    def test_the_env_section_names_the_variable_and_the_scope(self):
+        doc = load_sync().format_doc()
+        self.assertIn("## Token capture (environment)", doc)
+        self.assertIn(db.TOKEN_ENV_NAME, doc)
+        # The one thing a reader gets wrong on their own: qcut's environment is
+        # irrelevant; the variable has to be there when the CLI starts.
+        self.assertIn("process that runs the Qoder CN CLI", doc)
+        self.assertIn("cannot be recovered", doc)
+
+    def test_the_env_section_is_generated_from_the_constant(self):
+        """A hard-coded name in the document would drift from the one `qcut env`
+        prints. The section is built from `db.TOKEN_ENV_NAME`, so replacing the
+        constant must replace both."""
+        from unittest import mock
+        sync = load_sync()
+        with mock.patch.object(db, "TOKEN_ENV_NAME", "QCUT_TEST_FLAG"):
+            doc = sync.format_doc()
+        self.assertIn("QCUT_TEST_FLAG", doc)
+        self.assertNotIn("QODERCN_EXPOSE_TOKEN_USAGE", doc)
 
 
 if __name__ == "__main__":

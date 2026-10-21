@@ -24,6 +24,11 @@ from typing import NamedTuple
 
 SCHEMA_VERSION = 1
 
+# The Qoder CN CLI writes real token fields only when this variable is set in
+# the CLI process's environment. qcut never sets it: it only reads what the CLI
+# already wrote, and `qcut env` tells the user how to enable it for future calls.
+TOKEN_ENV_NAME = "QODERCN_EXPOSE_TOKEN_USAGE"
+
 # --- locations -------------------------------------------------------------
 
 QODER_DIR = Path(os.environ.get("QCUT_QODER_DIR", str(Path.home() / ".qoder-cn")))
@@ -191,13 +196,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- field absent from the usage object is stored as NULL (never a fabricated 0);
 -- a field the provider reported as 0 stays 0.
 --
--- Qoder's own routes (qfmodel / qmodel* / auto) report credits and *zero for
--- every token field*; a BYOK route (openai-compatible, e.g. ark) reports tokens
--- and carries no credits field at all -- NULL, not a 0, per the rule above. The
--- two are complementary, not interchangeable, so both are stored and neither is
--- inferred from the other. See `tokens_reported` in `q_models` / the Dashboard
--- for how that is surfaced, and `fmt_tok` in the TUI for how a token the route
--- never reports is drawn.
+-- Qoder's own routes (qfmodel / qmodel* / auto) write credits and *zero for
+-- every token field* unless the CLI process has QODERCN_EXPOSE_TOKEN_USAGE=1;
+-- with that flag they write real tokens and may still carry credits. A BYOK
+-- route (openai-compatible, e.g. ark) reports tokens and carries no credits
+-- field at all -- NULL, not a 0, per the rule above. Tokens and credits can
+-- therefore coexist, and a token sum only describes the rows that reported one.
+-- See `token_covered` / `credits_only` / `unmeasured` in `q_models` and the
+-- coverage figures in the Dashboard/Tokens tab for how that is surfaced, and
+-- `fmt_tok` in the TUI for how a token the route never reports is drawn.
 CREATE TABLE IF NOT EXISTS model_calls (
     message_id           TEXT PRIMARY KEY,
     session_id           TEXT,
@@ -1081,18 +1088,41 @@ def q_plugins(conn):
             )) AS commands
     FROM names n
     LEFT JOIN plugin_usage u ON u.plugin = n.name
-    LEFT JOIN inventory i ON i.kind='plugin' AND i.name = n.name
+    LEFT JOIN (
+        SELECT name, MAX(version) AS version, MAX(source) AS source
+        FROM inventory WHERE kind = 'plugin' GROUP BY name
+    ) i ON i.name = n.name
     GROUP BY n.name
     ORDER BY uses DESC, plugin
     """).fetchall()
 
 
-def q_models(conn, start_ts=None, end_ts=None):
-    """Per-model totals: tokens, credits and how many rows reported tokens.
+def q_commands(conn, limit=None):
+    """Slash-command usage, all-time, ranked by call count."""
+    sql = """
+    SELECT command,
+           COUNT(*) AS calls,
+           COUNT(DISTINCT session_id) AS sessions,
+           MAX(ts) AS last_used
+    FROM commands
+    GROUP BY command
+    ORDER BY calls DESC, command
+    """
+    params = []
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return conn.execute(sql, params).fetchall()
 
-    ``tokens_reported`` counts rows whose usage carried a non-zero token field.
-    Without it a model that reports only credits (every Qoder-hosted route on
-    this machine) is indistinguishable from one with genuinely zero usage.
+
+def q_models(conn, start_ts=None, end_ts=None):
+    """Per-model totals: tokens, credits and the token-coverage partition.
+
+    The three counts partition ``requests``: ``token_covered`` rows reported at
+    least one non-zero token field, ``credits_only`` rows reported none and
+    carried credits, and ``unmeasured`` rows carried neither. Token ``SUM``s
+    stay NULL when no row contributed a field (never a fabricated 0), and they
+    describe only the covered rows — the coverage counts say how many that is.
     """
     conds = _time_conds(start_ts, end_ts)
     where = ("WHERE " + " AND ".join(sql for sql, _ in conds)) if conds else ""
@@ -1101,13 +1131,15 @@ def q_models(conn, start_ts=None, end_ts=None):
     SELECT model,
            provider,
            COUNT(*) AS requests,
-           SUM(COALESCE(input_tokens,0))  AS input_tokens,
-           SUM(COALESCE(output_tokens,0)) AS output_tokens,
-           SUM(COALESCE(cache_read_tokens,0)) AS cache_read_tokens,
-           SUM(COALESCE(cache_creation_tokens,0)) AS cache_creation_tokens,
+           SUM(input_tokens)  AS input_tokens,
+           SUM(output_tokens) AS output_tokens,
+           SUM(cache_read_tokens) AS cache_read_tokens,
+           SUM(cache_creation_tokens) AS cache_creation_tokens,
            SUM(COALESCE(credits,0)) AS credits,
            SUM(COALESCE(original_credits,0)) AS original_credits,
-           {_AGG_TOKENS_REPORTED_EXPR} AS tokens_reported,
+           {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
+           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
+           {_AGG_UNMEASURED_EXPR} AS unmeasured,
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
            {_AGG_TOTAL_EXPR} AS total_tokens,
            {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
@@ -1142,7 +1174,10 @@ def q_usage_model_stats(conn, start_ts=None, end_ts=None, order_by="total_tokens
            {_AGG_CACHE_MISS_EXPR} AS cache_miss,
            SUM(cache_creation_tokens) AS cache_write,
            SUM(credits) AS credits,
-           {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried
+           {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
+           {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
+           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
+           {_AGG_UNMEASURED_EXPR} AS unmeasured
     FROM model_calls {where}
     GROUP BY model, provider ORDER BY {order}, model
     """, params).fetchall()
@@ -1167,9 +1202,22 @@ def _history_table(kind):
     }[kind]
 
 
-def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None):
+def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None,
+              provider=None, tool=None):
+    """One entity's calls, optionally narrowed to a provider or an MCP tool.
+
+    ``provider`` and ``tool`` are the second half of the key a Tokens or MCP
+    row carries: a model can appear under more than one provider, and an MCP
+    server owns many tools. Passing them keeps the drill-down on the row the
+    user selected instead of widening back to the whole server/model.
+    """
     table, col = _history_table(kind)
-    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts)
+    conds = [(f"{col} = ?", name)]
+    if kind == "model" and provider is not None:
+        conds.append(("provider IS ?", provider))
+    if kind == "mcp" and tool is not None:
+        conds.append(("tool = ?", tool))
+    conds += _time_conds(start_ts, end_ts)
     where = " AND ".join(sql for sql, _ in conds)
     params = [v for _, v in conds]
     # Each kind returns exactly the columns its history screen renders, so the
@@ -1206,10 +1254,16 @@ def q_entity_exists(conn, kind, name):
         f"SELECT 1 FROM {table} WHERE {col} = ? LIMIT 1", (name,)).fetchone() is not None
 
 
-def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None):
+def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None,
+                     provider=None, tool=None):
     """Counts and totals for one entity, inside the caller's window."""
     table, col = _history_table(kind)
-    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts)
+    conds = [(f"{col} = ?", name)]
+    if kind == "model" and provider is not None:
+        conds.append(("provider IS ?", provider))
+    if kind == "mcp" and tool is not None:
+        conds.append(("tool = ?", tool))
+    conds += _time_conds(start_ts, end_ts)
     where = " AND ".join(sql for sql, _ in conds)
     params = [v for _, v in conds]
     if kind == "model":
@@ -1224,7 +1278,10 @@ def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None):
                {_AGG_TOTAL_EXPR} AS total_tokens,
                {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
                {_AGG_CACHE_MISS_EXPR} AS cache_miss_tokens,
-               {_AGG_TOKENS_REPORTED_EXPR} AS tokens_reported,
+               {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
+               {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
+               {_AGG_UNMEASURED_EXPR} AS unmeasured,
+               {_AGG_TOKEN_COVERED_EXPR} * 1.0 / COUNT(*) AS token_coverage,
                MIN(ts) AS first_used, MAX(ts) AS last_used,
                COUNT(DISTINCT session_id) AS sessions
         FROM {table} WHERE {where}
@@ -1317,20 +1374,27 @@ _CACHE_MISS_EXPR = (
     " ELSE MAX(0, input_tokens - COALESCE(cache_read_tokens, 0)) END"
 )
 _AGG_CACHE_MISS_EXPR = f"SUM({_CACHE_MISS_EXPR})"
-# Does a row report *any* token measure? Qoder's own routes answer all four
-# token fields with a literal `0` and bill in credits; a BYOK route answers with
-# real tokens and carries no credits field at all. The two populations are
-# complementary, so a `0` in a token column does not mean "used nothing" — it
-# means "this route does not count in tokens". One expression for every query
+# Does a row report *any* token measure? A literal `0` in every field is the
+# shape the CLI writes for a hosted call without the token flag, so it means
+# "no token was reported", not "used nothing". One expression for every query
 # that shows a token number, and the Python half below, so a rendered `—` and
-# the `Tok reported` count can never disagree about the same row.
-_TOKENS_REPORTED_EXPR = (
+# the coverage count can never disagree about the same row.
+_TOKEN_COVERED_EXPR = (
     "COALESCE(input_tokens,0) > 0 OR COALESCE(output_tokens,0) > 0"
     " OR COALESCE(cache_read_tokens,0) > 0"
     " OR COALESCE(cache_creation_tokens,0) > 0"
 )
-_AGG_TOKENS_REPORTED_EXPR = (
-    f"SUM(CASE WHEN {_TOKENS_REPORTED_EXPR} THEN 1 ELSE 0 END)")
+_AGG_TOKEN_COVERED_EXPR = (
+    f"SUM(CASE WHEN {_TOKEN_COVERED_EXPR} THEN 1 ELSE 0 END)")
+# The other two states partition every row with the one above: a row that did
+# not report a token either carried credits (the hosted legacy shape) or
+# carried neither (unmeasured). They are row counts, never token estimates.
+_AGG_CREDITS_ONLY_EXPR = (
+    f"SUM(CASE WHEN NOT ({_TOKEN_COVERED_EXPR}) AND credits IS NOT NULL"
+    " THEN 1 ELSE 0 END)")
+_AGG_UNMEASURED_EXPR = (
+    f"SUM(CASE WHEN NOT ({_TOKEN_COVERED_EXPR}) AND credits IS NULL"
+    " THEN 1 ELSE 0 END)")
 
 # The credits-side mirror of the same problem. A BYOK route carries no `credits`
 # field at all, so `SUM(COALESCE(credits,0))` over such a route is `0` — which
@@ -1354,13 +1418,25 @@ TOKEN_COLUMNS = _TOKEN_FIELDS + ("total_tokens", "usage_total_tokens",
 
 
 def row_reports_tokens(row) -> bool:
-    """The Python half of :data:`_TOKENS_REPORTED_EXPR`, field for field.
+    """The Python half of :data:`_TOKEN_COVERED_EXPR`, field for field.
 
     Works on a ``sqlite3.Row`` and on a plain dict alike; a field the query did
     not select is treated as not reported rather than raising.
     """
     keys = row.keys()
     return any((row[f] or 0) > 0 for f in _TOKEN_FIELDS if f in keys)
+
+
+def token_coverage(covered, requests):
+    """Share of requests that reported any token, or None for an empty window.
+
+    Coverage is a share of *requests*, not of token volume: there is no honest
+    way to measure the tokens a legacy hosted call hid, so the tool reports how
+    many calls the token sums actually describe and stops there.
+    """
+    if not requests:
+        return None
+    return covered / requests
 
 
 _Q_MODEL_STATS_ORDER = {
@@ -1392,7 +1468,9 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
            SUM(COALESCE(cache_creation_tokens,0)) AS cache_creation_tokens,
            SUM(COALESCE(credits,0)) AS credits,
            SUM(COALESCE(original_credits,0)) AS original_credits,
-           {_AGG_TOKENS_REPORTED_EXPR} AS tokens_reported,
+           {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
+           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
+           {_AGG_UNMEASURED_EXPR} AS unmeasured,
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
            COUNT(DISTINCT session_id) AS sessions,
            COUNT(DISTINCT project) AS projects
@@ -1435,13 +1513,20 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
         "mcp": mcp["n"] or 0,
         "plugins": plugins["n"] or 0,
         "requests": tok["requests"] or 0,
-        "input_tokens": tok["input_tokens"] or 0,
-        "output_tokens": tok["output_tokens"] or 0,
-        "cache_read_tokens": tok["cache_read_tokens"] or 0,
-        "cache_creation_tokens": tok["cache_creation_tokens"] or 0,
+        # Token sums stay NULL when nothing contributed: an empty window must
+        # read `-`, and a hosted-only window's literal zeros read `—` through
+        # the coverage count, never a fabricated total.
+        "input_tokens": tok["input_tokens"],
+        "output_tokens": tok["output_tokens"],
+        "cache_read_tokens": tok["cache_read_tokens"],
+        "cache_creation_tokens": tok["cache_creation_tokens"],
         "credits": tok["credits"] or 0.0,
         "original_credits": tok["original_credits"] or 0.0,
-        "tokens_reported": tok["tokens_reported"] or 0,
+        "token_covered": tok["token_covered"] or 0,
+        "credits_only": tok["credits_only"] or 0,
+        "unmeasured": tok["unmeasured"] or 0,
+        "token_coverage": token_coverage(tok["token_covered"] or 0,
+                                         tok["requests"] or 0),
         "credits_carried": tok["credits_carried"] or 0,
         "model_sessions": tok["sessions"] or 0,
         "model_projects": tok["projects"] or 0,
@@ -1485,10 +1570,18 @@ def q_usage_summary(conn, start_ts, end_ts) -> dict:
            {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
            SUM(CASE WHEN input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_input,
            SUM(CASE WHEN output_tokens IS NULL THEN 1 ELSE 0 END) AS missing_output,
-           {_AGG_TOKENS_REPORTED_EXPR} AS tokens_reported
+           {_AGG_TOKEN_COVERED_EXPR} AS token_covered,
+           {_AGG_CREDITS_ONLY_EXPR} AS credits_only,
+           {_AGG_UNMEASURED_EXPR} AS unmeasured
     FROM model_calls {where}
     """, params).fetchone()
-    return dict(row)
+    data = dict(row)
+    data["token_covered"] = data["token_covered"] or 0
+    data["credits_only"] = data["credits_only"] or 0
+    data["unmeasured"] = data["unmeasured"] or 0
+    data["token_coverage"] = token_coverage(data["token_covered"],
+                                            data["requests"] or 0)
+    return data
 
 
 def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):

@@ -85,27 +85,45 @@ def fmt_n(v):
 
 
 def fmt_tok(value, reported):
-    """Render one token measure, given whether its route reports tokens at all.
+    """Render one token measure, given whether *any* row reported a token.
 
     Three states, and they are not the same statement:
 
     ``-``   nothing in this window contributed (a NULL sum, or a NULL field)
-    ``—``   there *is* a number, and it is a route-level zero — Qoder's own
-            routes bill in credits and answer every token field with a literal
+    ``—``   there *is* a number, and no row behind it carried a token — a
+            credits-only hosted call answers every token field with a literal
             ``0``, so a sum of those zeros is not a total. Naming it ``0``
             would claim "this model used no tokens", which is a different fact.
-    ``1,234`` a reported measurement.
+    ``1,234`` a measured value (possibly a partial total: see coverage).
+
+    Credits and tokens can coexist: a hosted call made with
+    ``QODERCN_EXPOSE_TOKEN_USAGE=1`` carries real tokens *and* credits, so a
+    non-zero token cell says nothing about credits and vice versa.
 
     The guard reads the value too, not only the flag: a non-zero is shown
     whatever `reported` claims. The flag is computed elsewhere from the same
     fields it then hides, so a bug there must not be able to swallow a
-    measurement — `test_usage.py::TokenReportingTest` holds this.
+    measurement — `test_usage.py` locks the two definitions together.
     """
     if value is None:
         return "-"
     if not reported and not value:
         return "—"
     return fmt_n(value)
+
+
+def fmt_coverage(covered, requests):
+    """The measured share of requests, or ``-`` when the window is empty.
+
+    A share of *requests*, never of token volume: it says how many calls the
+    token sums describe, not how much of the work they account for.
+    Deliberately duplicated in ``qcut-stats.py`` (like ``fmt_tok``)
+    rather than imported, so the headless report stays a stdlib-only script;
+    ``test_usage.py`` asserts the two render identically.
+    """
+    if not requests:
+        return "-"
+    return f"{covered / requests * 100:.1f}% ({fmt_n(covered)}/{fmt_n(requests)})"
 
 
 def count_n(v, singular, plural=None):
@@ -232,15 +250,15 @@ def provider_cell(value):
 USAGE_COLUMNS = ("Time", "Model", "Provider", "Route", "Credits", "Usage Total",
                  "Input", "Output", "API Total", "Cache hit", "Cache miss",
                  "Cache write", "Hit rate")
-# Tokens tab: the per-model rollup, same measure family. `Tok reported` is kept
-# where cc-switch's near-always-100% "Coverage" was dropped: on Qoder a route
-# that reports credits only is a real, recurring 0, so the column is evidence
-# rather than noise. The same fact is what turns that row's token cells into `—`
-# — one expression (`db._TOKENS_REPORTED_EXPR`) feeds both, so the yes/no and the
-# dash cannot disagree.
-TOKENS_COLUMNS = ("Model", "Provider", "Route", "Credits", "Requests",
+# Tokens tab: the per-model rollup, same measure family. `Coverage` sits right
+# after `Requests` because on this machine it is the column that stops a partial
+# token sum from reading as a total: most legacy hosted calls reported no token,
+# so a model can show real tokens for a small share of its requests. One
+# expression (`db._TOKEN_COVERED_EXPR`) feeds the column and the `—` in the token
+# cells, so the two cannot disagree.
+TOKENS_COLUMNS = ("Model", "Provider", "Route", "Credits", "Requests", "Coverage",
                   "Usage Total", "Input", "Output", "API Total", "Cache hit",
-                  "Cache miss", "Cache write", "Hit rate", "Tok reported")
+                  "Cache miss", "Cache write", "Hit rate")
 
 TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "pending", "avg", "last used")
 SKILLS_COLUMNS = ("skill", "calls", "ok", "plugin", "last used")
@@ -335,6 +353,12 @@ def _call_detail_rows(row):
         else:
             text = str(value)
         out.append((label, text))
+    if "input_tokens" in row.keys():
+        # The per-call member of the three-state partition the aggregates report:
+        # a call either measured a token, billed credits without one, or neither.
+        state = ("token-covered" if reports_tokens else
+                 "credits-only" if row["credits"] is not None else "unmeasured")
+        out.append(("token coverage", state))
     return out
 
 
@@ -1066,7 +1090,7 @@ class HistoryScreen(WideTableMixin, Screen):
     WIDE_TABLES = {"hist-table": (HISTORY_COLUMNS["tool"], "colnote-hist", 1)}
 
     def __init__(self, kind, name, display=None, start_ts=None, end_ts=None,
-                 window_label="all time"):
+                 window_label="all time", tool=None):
         super().__init__()
         self.kind = kind
         self.entity = name
@@ -1074,6 +1098,7 @@ class HistoryScreen(WideTableMixin, Screen):
         self.start_ts = start_ts
         self.end_ts = end_ts
         self.window_label = window_label
+        self.tool = tool
         self._wide_rows = {}
         self._call_ids = []
 
@@ -1101,7 +1126,7 @@ class HistoryScreen(WideTableMixin, Screen):
     def _reload(self) -> None:
         conn = self.app.conn
         summary = db.q_entity_summary(conn, self.kind, self.entity,
-                                      self.start_ts, self.end_ts)
+                                      self.start_ts, self.end_ts, tool=self.tool)
         lines = [f"[b]{self.kind}: {self.heading}[/b]  ·  window: {self.window_label}"]
         if summary is not None:
             lines.append("  " + "   ".join(
@@ -1110,7 +1135,8 @@ class HistoryScreen(WideTableMixin, Screen):
         self.query_one("#hist-head", Static).update("\n".join(lines))
         rows = db.q_history(conn, self.kind, self.entity,
                             limit=self.app.cfg["detail_limit"],
-                            start_ts=self.start_ts, end_ts=self.end_ts)
+                            start_ts=self.start_ts, end_ts=self.end_ts,
+                            tool=self.tool)
         table_rows, call_ids = [], []
         for r in rows:
             status = r["status"] or "pending"
@@ -1146,15 +1172,17 @@ class HistoryScreen(WideTableMixin, Screen):
             return fmt_credits(value)
         if key == "avg_ms":
             return ms(value)
-        if key == "tokens_reported":
+        if key == "token_coverage":
+            return pct(value)
+        if key in ("token_covered", "credits_only", "unmeasured"):
             return fmt_n(value)
         if summary is not None and key in _DETAIL_TOKEN_COLS:
             # A tool/skill summary carries no token fields at all, so the flag
             # is looked up rather than assumed — and a summary that does not
             # report one is shown as a plain number, never as `—`.
             keys = summary.keys()
-            return fmt_tok(value, bool(summary["tokens_reported"])
-                           if "tokens_reported" in keys else True)
+            return fmt_tok(value, bool(summary["token_covered"])
+                           if "token_covered" in keys else True)
         if isinstance(value, int):
             return fmt_n(value)
         return value
@@ -1189,9 +1217,10 @@ class ModelResponsesScreen(WideTableMixin, Screen):
     WIDE_TABLES = {"resp-table": (RESPONSE_COLUMNS, "colnote-resp", 1)}
 
     def __init__(self, model, start_ts=None, end_ts=None,
-                 window_label="all time"):
+                 window_label="all time", provider=None):
         super().__init__()
         self.model = model
+        self.provider = provider
         self.start_ts = start_ts
         self.end_ts = end_ts
         self.window_label = window_label
@@ -1201,23 +1230,31 @@ class ModelResponsesScreen(WideTableMixin, Screen):
     def name_cap(self):
         return self.app.name_cap
 
+    @property
+    def heading(self) -> str:
+        """One model can appear under several providers; the row's channel is
+        part of its identity on the Tokens tab, so the drill-down keeps it."""
+        if self.provider is None:
+            return self.model
+        return f"{self.model} · {db.provider_label(self.provider)}"
+
     def compose(self) -> ComposeResult:
-        yield TopBar(f"model: {self.model}")
+        yield TopBar(f"model: {self.heading}")
         yield Static(id="resp-head")
         yield Static("", id="colnote-resp", classes="colnote")
         yield DataTable(id="resp-table", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = f"model: {self.model}"
+        self.title = f"model: {self.heading}"
         for tid, (cols, _note, _chrome) in self.WIDE_TABLES.items():
             table = self.query_one(f"#{tid}", DataTable)
             table.cursor_type = "row"
             table.add_columns(*cols)
         conn = self.app.conn
         summary = db.q_entity_summary(conn, "model", self.model, self.start_ts,
-                                      self.end_ts)
-        lines = [f"[b]model: {self.model}[/b]  ·  window: {self.window_label}"]
+                                      self.end_ts, provider=self.provider)
+        lines = [f"[b]model: {self.heading}[/b]  ·  window: {self.window_label}"]
         if summary is not None:
             lines.append("  " + "   ".join(
                 f"{key} = {HistoryScreen._summary_value(key, summary[key], summary)}"
@@ -1225,7 +1262,8 @@ class ModelResponsesScreen(WideTableMixin, Screen):
         self.query_one("#resp-head", Static).update("\n".join(lines))
         rows = db.q_history(conn, "model", self.model,
                             limit=self.app.cfg["detail_limit"],
-                            start_ts=self.start_ts, end_ts=self.end_ts)
+                            start_ts=self.start_ts, end_ts=self.end_ts,
+                            provider=self.provider)
         out = []
         for r in rows:
             rep = db.row_reports_tokens(r)
@@ -1501,6 +1539,7 @@ class TrackerApp(WideTableMixin, App):
                                 Vertical(
                                     Static("Tokens", classes="panel-title"),
                                     Static(id="dash-tok-requests"),
+                                    Static(id="dash-tok-coverage"),
                                     Static(id="dash-tok-input"),
                                     Static(id="dash-tok-output"),
                                     Static(id="dash-tok-api"),
@@ -1560,7 +1599,8 @@ class TrackerApp(WideTableMixin, App):
                                            classes="panel-title"),
                                     Static(id="usage-window"),
                                     Static(id="sum-requests"),
-                                    Static(id="sum-missing"),
+                                    Static(id="sum-coverage"),
+                                    Static(id="sum-coverage-detail"),
                                     classes="usage-panel", id="panel-window",
                                 ),
                                 Vertical(
@@ -1831,13 +1871,15 @@ class TrackerApp(WideTableMixin, App):
         self._put_panel("#dash-kpi-mcp", "MCP", f"{kpi['mcp']:,}")
         self._put_panel("#dash-kpi-plugins", "Plugins", f"{kpi['plugins']:,}")
 
-        # A window of Qoder-hosted responses sums to zero in every token column
-        # while billing real credits; `tok_rep` is the single flag that turns
-        # those structural zeros into `—` here and on the Usage page, so the two
-        # panels can never disagree about the same window.
-        tok_rep = bool(summary["tokens_reported"])
+        # A window whose calls all failed to report a token sums to zero in every
+        # token column while possibly billing real credits; `tok_rep` is the
+        # single flag that turns those structural zeros into `—` here and on the
+        # Usage page, so the two panels can never disagree about one window.
+        tok_rep = summary["token_covered"] > 0
         self._put_panel("#dash-tok-requests", "Requests",
                         f"{summary['requests'] or 0:,}")
+        self._put_panel("#dash-tok-coverage", "Coverage",
+                        pct(summary["token_coverage"]))
         self._put_panel("#dash-tok-input", "Input",
                         fmt_tok(summary["input_tokens"], tok_rep))
         self._put_panel("#dash-tok-output", "Output",
@@ -1898,9 +1940,11 @@ class TrackerApp(WideTableMixin, App):
         else:
             self.query_one("#dash-note", Static).update(
                 "Route: Built-in = Qoder's own, 3P = a BYOK/third-party channel "
-                "(Provider names it). Credits are Qoder's own metric; a BYOK route "
-                "reports tokens instead, never both. `—` = this window answers in "
-                "credits, not tokens; `-` = nothing contributed to it at all.")
+                "(Provider names it). Credits and tokens can coexist: a hosted call "
+                "made with QODERCN_EXPOSE_TOKEN_USAGE=1 reports both, while legacy "
+                "hosted calls report credits only. Coverage is the measured share of "
+                "requests. `—` = no call in this window reported a token; `-` = "
+                "nothing contributed at all.")
 
     # Block characters for the per-day sparkline (index 0 = no activity).
     _SPARK = " ▁▂▃▄▅▆▇█"
@@ -1984,8 +2028,10 @@ class TrackerApp(WideTableMixin, App):
 
     def _render_summary_panels(self, summary: dict) -> None:
         req = summary["requests"] or 0
-        tok_rep = bool(summary["tokens_reported"])
+        tok_rep = summary["token_covered"] > 0
         self._put_panel("#sum-requests", "Requests", f"{req:,}")
+        self._put_panel("#sum-coverage", "Coverage",
+                        pct(summary["token_coverage"]))
         # Usage Total = Input + Output + cache hit; a display-only re-add, shown
         # beside the API total and never instead of it.
         self._put_panel("#sum-usage-total", "Usage Total",
@@ -2008,20 +2054,20 @@ class TrackerApp(WideTableMixin, App):
         self._put_panel("#sum-hit-rate", "Hit rate",
                         self._hit_rate(summary["cache_hit"], summary["cache_miss"],
                                        summary["cache_write"]))
-        missing = []
-        if summary["missing_input"]:
-            missing.append(f"{summary['missing_input']:,} missing input")
-        if summary["missing_output"]:
-            missing.append(f"{summary['missing_output']:,} missing output")
         if req == 0:
-            note = "no data in window"
-        elif missing:
-            note = ", ".join(missing)
+            detail = "no data in window"
         else:
-            note = "complete"
-        # The panel reports completeness either way; naming it "Incomplete" made
-        # the good case read "Incomplete: complete".
-        self._put_panel("#sum-missing", "Completeness", note)
+            # Counts, never token estimates: a credits-only call's hidden tokens
+            # are unknowable, so the panel counts the calls, not the gap.
+            lines = [f"{summary['token_covered']:,}/{req:,} covered",
+                     f"{summary['credits_only']:,} credits-only",
+                     f"{summary['unmeasured']:,} unmeasured"]
+            if summary["missing_input"]:
+                lines.append(f"{summary['missing_input']:,} missing input")
+            if summary["missing_output"]:
+                lines.append(f"{summary['missing_output']:,} missing output")
+            detail = "\n".join(lines)
+        self.query_one("#sum-coverage-detail", Static).update(detail)
 
     def _fill_usage(self, conn, start=None, end=None) -> None:
         if not self._usage_ready:
@@ -2035,12 +2081,13 @@ class TrackerApp(WideTableMixin, App):
         rows = db.q_usage_request_logs(conn, start, end,
                                        limit=self.cfg["log_limit"])
         self.query_one("#usage-note", Static).update(
-            "Newest first · Route: Built-in (Qoder) or 3P (BYOK) · Provider "
-            "names the channel · Usage Total re-adds cache hit (it is already "
-            "inside Input) · cache miss is derived · `-` = nothing in this window, `—` "
-            "= a route that bills in credits and answers every token field with "
-            "0 (a BYOK route is the reverse: real tokens, no credits field). "
-            "No duration or status column: the transcripts carry neither."
+            "Newest first · Enter opens the call · Route: Built-in (Qoder) or 3P "
+            "(BYOK) · Provider names the channel · Usage Total re-adds cache hit "
+            "(it is already inside Input) · cache miss is derived · credits and "
+            "tokens can coexist · `—` = this call reported no token, `-` = the "
+            "field is absent · Coverage (above) is the measured share of requests "
+            "· run `qcut env` to capture tokens on future CLI calls. No duration "
+            "or status column: the transcripts carry neither."
             if rows else "")
         out = []
         for r in rows:
@@ -2059,10 +2106,13 @@ class TrackerApp(WideTableMixin, App):
                 self._hit_rate(r["cache_read_tokens"], r["cache_miss_tokens"],
                                r["cache_creation_tokens"]),
             ])
-        # Keyed by message id, so selecting a request opens its own detail.
+        # Keyed by the call itself (`model` + message id), so Enter opens that
+        # request's full detail instead of a model-wide response list. The key
+        # kind is `call` precisely so the app router does not read the message
+        # id as a model name.
         self._fill_wide("usage-table", out, EMPTY_MSG["usage"],
-                        key_index=0, key_kind="model",
-                        key_rows=[[r["message_id"]] for r in rows])
+                        key_index=(0, 1), key_kind="call",
+                        key_rows=[["model", r["message_id"]] for r in rows])
 
     # --- the entity tabs ---------------------------------------------------
 
@@ -2101,34 +2151,45 @@ class TrackerApp(WideTableMixin, App):
             EMPTY_MSG["plugins"], key_index=0, key_kind="plugin")
 
     def _fill_mcp(self, conn, start=None, end=None) -> None:
+        # The key is built from the raw (server, tool) pair, never the rendered
+        # cells: an absent half renders as `—`, and a drill-down must receive the
+        # empty value it can test, not an em dash it would search for.
+        rows = db.q_mcp(conn, start_ts=start, end_ts=end)
+        pairs = [[r["server"] or "", r["tool"] or ""] for r in rows]
         self._fill_wide(
             "mcp-table",
-            [[r["server"] or "—", r["tool"] or "—", fmt_n(r["calls"]),
+            [[(r["server"] or "—"), (r["tool"] or "—"), fmt_n(r["calls"]),
               fmt_n(r["completed"]), ms(r["avg_ms"]), ts(r["last_used"])]
-             for r in db.q_mcp(conn, start_ts=start, end_ts=end)],
-            EMPTY_MSG["mcp"], key_index=(0, 1), key_kind="mcp")
+             for r in rows],
+            EMPTY_MSG["mcp"], key_index=(0, 1), key_kind="mcp",
+            key_rows=pairs)
 
     def _fill_tokens(self, conn, start=None, end=None) -> None:
         rows = []
+        keys = []
         for r in db.q_models(conn, start_ts=start, end_ts=end):
-            # `tokens_reported` is the same count the last column shows as
-            # yes/no, and it is the same expression the Usage page and the
-            # Dashboard use — so a `—` here and a `no` there are one fact.
-            rep = bool(r["tokens_reported"])
+            # The same count drives the Coverage column and the `—` in this row's
+            # token cells, and it is the expression the Usage page and Dashboard
+            # use — a partial sum and a partial coverage can never disagree.
+            rep = bool(r["token_covered"])
             rows.append([
                 r["model"], provider_cell(r["provider"]),
                 db.route_label(r["provider"]),
                 fmt_credit_total(r["credits"], r["credits_carried"]),
-                fmt_n(r["requests"]), fmt_tok(r["usage_total_tokens"], rep),
+                fmt_n(r["requests"]),
+                fmt_coverage(r["token_covered"], r["requests"]),
+                fmt_tok(r["usage_total_tokens"], rep),
                 fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
                 fmt_tok(r["total_tokens"], rep), fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
                 self._hit_rate(r["cache_read_tokens"], r["cache_miss_tokens"],
-                               r["cache_creation_tokens"]),
-                "yes" if rep else "no"])
+                               r["cache_creation_tokens"])])
+            # One model name can appear under two providers, so the drill-down
+            # must carry the channel too or it widens back to both.
+            keys.append([r["model"], r["provider"] or ""])
         self._fill_wide("tokens-table", rows, EMPTY_MSG["tokens"],
-                        key_index=0, key_kind="model")
+                        key_index=(0, 1), key_kind="model", key_rows=keys)
 
     # --- refresh plumbing --------------------------------------------------
 
@@ -2314,20 +2375,37 @@ class TrackerApp(WideTableMixin, App):
         kind, _, rest = key.partition("\t")
         pane = self.active_tab
         start, end, label = self._window(pane)
-        if kind == "mcp":
-            # An MCP row is keyed by (server, tool). q_history maps "mcp" to the
-            # mcp_usage.tool column, so query by the TOOL and show "server · tool"
-            # as the title. A server-less row has no entity to open.
-            server, _, tool = rest.partition("\t")
-            if not tool or tool == "-":
+        if kind == "call":
+            # A Usage row's key is `call\tmodel\t<message id>`: the row is one
+            # response, so Enter opens that call's own detail — not a model-wide
+            # list that would make the user find the same row again.
+            call_kind, _, message_id = rest.partition("\t")
+            if call_kind != "model" or not message_id:
                 return
-            self.push_screen(HistoryScreen(
-                "mcp", tool, display=f"{server} · {tool}", start_ts=start,
-                end_ts=end, window_label=label))
+            self.push_screen(CallScreen("model", message_id, "Usage request"))
+        elif kind == "mcp":
+            # An MCP row is keyed by (server, tool). A tool row opens that tool's
+            # history under its server; a server-only row opens the whole server.
+            # Both query by the server, because q_history maps mcp to that column.
+            server, _, tool = rest.partition("\t")
+            if not server:
+                return
+            if tool:
+                self.push_screen(HistoryScreen(
+                    "mcp", server, display=f"{server} · {tool}", start_ts=start,
+                    end_ts=end, window_label=label, tool=tool))
+            else:
+                self.push_screen(HistoryScreen(
+                    "mcp", server, start_ts=start, end_ts=end,
+                    window_label=label))
         elif kind == "plugin":
             self.push_screen(PluginScreen(rest))
         elif kind == "model":
-            self.push_screen(ModelResponsesScreen(rest, start, end, label))
+            # A Tokens row is (model, provider): the provider is optional, and
+            # passing it keeps the drill-down on the row that was selected.
+            model, _, provider = rest.partition("\t")
+            self.push_screen(ModelResponsesScreen(
+                model, start, end, label, provider=provider or None))
         else:
             self.push_screen(HistoryScreen(kind, rest, start_ts=start,
                                            end_ts=end, window_label=label))

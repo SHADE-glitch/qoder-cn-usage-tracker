@@ -891,6 +891,13 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
         await pilot.pause()
         await pilot.pause()
 
+    def _row_index(self, app, table_id, key):
+        """The row number of one exact `<kind>\\t…` key, read back from the table."""
+        table = self._table(app, table_id)
+        keys = [str(k.value) for k in table.rows]
+        self.assertIn(key, keys, f"{table_id} has no key {key!r}: {keys}")
+        return keys.index(key)
+
     async def test_a_history_row_opens_the_call_detail_and_nothing_on_top(self):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(140, 40)) as pilot:
@@ -913,7 +920,12 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(140, 40)) as pilot:
             await self._tab(app, pilot, "tokens")
             await self._open(app, pilot, "tokens-table")
-            self.assertIsInstance(app.screen, TUI.ModelResponsesScreen)
+            top = app.screen
+            self.assertIsInstance(top, TUI.ModelResponsesScreen)
+            # The key carries the provider half (the built-in sentinel here, the
+            # same value the row filters by): the drill-down is the one Tokens
+            # row, not a model name stripped of its route.
+            self.assertEqual((top.model, top.provider), ("qfmodel", "builtin"))
             await self._open(app, pilot, "resp-table")
             top = app.screen
             self.assertIsInstance(
@@ -925,6 +937,108 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
                 ["Screen", "ModelResponsesScreen", "CallScreen"],
                 "the second drill-down level is not the only screen the response "
                 "row pushed")
+
+    async def test_a_tokens_row_drills_down_to_its_own_provider(self):
+        """One model can appear under two providers; the row's channel is the
+        identity, so the drill-down must not list the other channel's calls."""
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, credits, has_usage)"
+            " VALUES('mx','s1','/work/demo',?, 'qfmodel','Volcano ARK',"
+            " 120, 24, NULL, 1)",
+            (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "tokens")
+            row = self._row_index(app, "tokens-table", "model\tqfmodel\tVolcano ARK")
+            await self._open(app, pilot, "tokens-table", row=row)
+            top = app.screen
+            self.assertIsInstance(top, TUI.ModelResponsesScreen)
+            self.assertEqual(top.provider, "Volcano ARK")
+            self.assertIn("Volcano ARK", top.heading)
+            # The four hosted qfmodel responses stay behind: this list is the
+            # provider's one call, not the model's whole history.
+            self.assertEqual(self._table(app, "resp-table").row_count, 1)
+
+    async def test_a_usage_row_opens_that_exact_call(self):
+        """The Usage tab lists calls, not models: Enter must open the call the
+        cursor is on, not a model-wide list that makes the user find it again."""
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "usage")
+            await self._open(app, pilot, "usage-table")   # newest first: m5
+            top = app.screen
+            self.assertIsInstance(
+                top, TUI.CallScreen,
+                f"a usage row routed to {type(top).__name__}: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
+            self.assertEqual((top.kind, top.key, top.heading),
+                             ("model", "m5", "Usage request"))
+            self.assertEqual(
+                [type(x).__name__ for x in app.screen_stack],
+                ["Screen", "CallScreen"],
+                "the usage row pushed more than the one call detail")
+
+    async def test_an_mcp_tool_row_opens_it_under_its_server(self):
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "mcp")
+            row = self._row_index(app, "mcp-table", "mcp\tsrv\twork")
+            await self._open(app, pilot, "mcp-table", row=row)
+            top = app.screen
+            self.assertIsInstance(top, TUI.HistoryScreen)
+            self.assertEqual((top.kind, top.entity, top.tool),
+                             ("mcp", "srv", "work"))
+            self.assertIn("srv · work", top.heading)
+            self.assertEqual(self._table(app, "hist-table").row_count, 1)
+
+    async def test_an_mcp_server_only_row_opens_the_whole_server(self):
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO inventory(kind, name, owner_plugin, version, path, source)"
+            " VALUES('mcp','idle-srv',NULL,NULL,NULL,'user')")
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "mcp")
+            row = self._row_index(app, "mcp-table", "mcp\tidle-srv\t")
+            await self._open(app, pilot, "mcp-table", row=row)
+            top = app.screen
+            self.assertIsInstance(top, TUI.HistoryScreen)
+            # No tool half: the screen is the server's own history, with no
+            # filter invented from an absent cell.
+            self.assertEqual((top.kind, top.entity, top.tool),
+                             ("mcp", "idle-srv", None))
+            self.assertEqual(top.heading, "idle-srv")
+
+    async def test_an_mcp_row_with_no_server_opens_nothing(self):
+        """An admin op (`mcp_list` and friends) has no server to scope a history
+        to. Pushing an empty HistoryScreen would be a screen with no entity."""
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO mcp_usage(call_id, server, tool, admin_op, session_id,"
+            " project, ts, status) VALUES('mc-admin',NULL,NULL,'list','s1',"
+            " '/work/demo',?, 'completed')",
+            (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "mcp")
+            row = self._row_index(app, "mcp-table", "mcp\t\t")
+            depth = len(app.screen_stack)
+            await self._open(app, pilot, "mcp-table", row=row)
+            self.assertEqual(
+                len(app.screen_stack), depth,
+                f"a server-less mcp row opened {type(app.screen).__name__}: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
 
     async def test_a_plugin_page_row_opens_no_second_screen(self):
         """`PluginScreen` is a leaf: its rows are calls, not entities to route.
@@ -1061,22 +1175,25 @@ def build_credit_only_db(case, with_byok=False):
 def row_map(table, name):
     """One rendered row as ``{column label: cell text}``, found by entity name.
 
-    The app keys a row ``"<kind>\t<uncapped value>"`` (see ``_fill``), so the key
-    is read back rather than re-derived — a test that guessed the separator would
-    fail on a refactor that changes nothing a user sees. Textual wraps each key in
-    a ``RowKey`` object, so the value is unwrapped rather than ``str``-ed (the
-    repr of a RowKey names its address, not the entity). The cells are zipped
-    against the labels the table actually built, because ``_fill_wide`` may drop
-    a column for want of width, and a positional read would then shift every
-    cell by one instead of saying so.
+    The app keys a row ``"<kind>\t<uncapped value>[\\t<second value>]"`` (see
+    ``_fill``), so the key is read back rather than re-derived — a test that
+    guessed the separator would fail on a refactor that changes nothing a user
+    sees. A Tokens key carries (model, provider) and an MCP key (server, tool),
+    so the name is matched against *any* segment, not only the last: the entity
+    a case asks for is the one the user sees in the first column. Textual wraps
+    each key in a ``RowKey`` object, so the value is unwrapped rather than
+    ``str``-ed (the repr of a RowKey names its address, not the entity). The
+    cells are zipped against the labels the table actually built, because
+    ``_fill_wide`` may drop a column for want of width, and a positional read
+    would then shift every cell by one instead of saying so.
     """
-    def entity(key):
-        return str(getattr(key, "value", key)).split("\t")[-1]
+    def parts(key):
+        return str(getattr(key, "value", key)).split("\t")
 
-    key = next((k for k in table.rows if entity(k) == name), None)
+    key = next((k for k in table.rows if name in parts(k)), None)
     if key is None:
         raise AssertionError(f"no row for {name!r}; keys="
-                             f"{[entity(k) for k in table.rows]}")
+                             f"{[parts(k) for k in table.rows]}")
     labels = [str(c.label) for c in table.columns.values()]
     return dict(zip(labels, [str(v) for v in table.get_row(key)]))
 
@@ -1101,11 +1218,11 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         for col in ("Usage Total", "Input", "Output", "API Total",
                     "Cache hit", "Cache miss", "Cache write"):
             self.assertEqual(hosted[col], "—", col)
-        # What the route *does* report stays a number, and the evidence column
+        # What the route *does* report stays a number, and the coverage column
         # says the same thing the dashes do.
         self.assertEqual(hosted["Requests"], "2")
         self.assertEqual(hosted["Credits"], "1.75")
-        self.assertEqual(hosted["Tok reported"], "no")
+        self.assertEqual(hosted["Coverage"], "0.0% (0/2)")
         # The route column is the one-word billing family beside the channel.
         self.assertEqual(hosted["Route"], "Built-in")
         # Provider is the channel name; Qoder's own route has none, and repeating
@@ -1114,7 +1231,7 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         byok = await self._tokens_row("byok-model")
         self.assertEqual(byok["Input"], "120")
         self.assertEqual(byok["Output"], "24")
-        self.assertEqual(byok["Tok reported"], "yes")
+        self.assertEqual(byok["Coverage"], "100.0% (1/1)")
         self.assertEqual(byok["Route"], "3P")
         self.assertEqual(byok["Provider"], "qoder-custom-a3d301ce")
         # E1, the other axis: that route never carried a `credits` field, so its
@@ -1146,21 +1263,55 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(200, 45)) as pilot:
             dash = str(app.query_one("#dash-tok-input", Static).content)
             self.assertTrue(dash.endswith("—"), dash)
+            coverage = str(app.query_one("#dash-tok-coverage", Static).content)
+            self.assertTrue(coverage.endswith("0.0%"), coverage)
             app.query_one(TabbedContent).active = "usage"
             await pilot.pause()
             await pilot.pause()
             panel = str(app.query_one("#sum-input", Static).content)
             self.assertTrue(panel.endswith("—"), panel)
+            coverage = str(app.query_one("#sum-coverage", Static).content)
+            self.assertTrue(coverage.endswith("0.0%"), coverage)
+            detail = str(app.query_one("#sum-coverage-detail", Static).content)
+            self.assertIn("0/2 covered", detail)
+            self.assertIn("2 credits-only", detail)
+            self.assertIn("0 unmeasured", detail)
 
     async def test_a_mixed_window_shows_the_tokens_it_does_have(self):
         # The mirror case, and why the dash also reads the value: one reporting
         # response in the window and the sum is a measurement again.
-        from textual.widgets import Static
+        from textual.widgets import Static, TabbedContent
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(200, 45)) as pilot:
-            _ = pilot
             panel = str(app.query_one("#dash-tok-input", Static).content)
             self.assertTrue(panel.endswith("120"), panel)
+            coverage = str(app.query_one("#dash-tok-coverage", Static).content)
+            self.assertTrue(coverage.endswith("33.3%"), coverage)
+            app.query_one(TabbedContent).active = "usage"
+            await pilot.pause()
+            await pilot.pause()
+            detail = str(app.query_one("#sum-coverage-detail", Static).content)
+            self.assertIn("1/3 covered", detail)
+            self.assertIn("2 credits-only", detail)
+
+    async def test_a_mixed_model_shows_a_partial_sum_beside_partial_coverage(self):
+        """One model, both eras: the sum is real, and it covers a third of the
+        calls — the cells must say both, not let the sum read as the whole."""
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, cache_read_tokens,"
+            " cache_creation_tokens, credits, has_usage) VALUES"
+            " ('m9','s1','/work/demo',?,'qfmodel','builtin',50,5,0,0,NULL,1)",
+            (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+        row = await self._tokens_row("qfmodel")
+        # Two legacy rows and one measured one: 1 request in 3, not 50% of the
+        # rows and not 50 tokens against a hidden total.
+        self.assertEqual(row["Coverage"], "33.3% (1/3)")
+        self.assertEqual(row["Input"], "50")
+        self.assertEqual(row["Credits"], "1.75")
 
     async def test_a_credits_only_call_detail_dashes_its_token_rows(self):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
@@ -1180,6 +1331,9 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             # reported measure keeps its parenthesised raw value.
             self.assertNotEqual(detail["credits"], "—")
             self.assertIn("(1.5)", detail["credits"])
+            # The per-call member of the three-state partition names what the
+            # four dashes above already say.
+            self.assertEqual(detail["token coverage"], "credits-only")
 
     async def test_a_byok_call_detail_keeps_its_token_numbers(self):
         """The same screen, the other kind of row: nothing here may be dashed."""
@@ -1196,6 +1350,7 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             # Its credits field is absent, which is `-`: an absent value and a
             # route-level zero are two different statements.
             self.assertEqual(detail["credits"], "-")
+            self.assertEqual(detail["token coverage"], "token-covered")
 
     async def test_fmt_tok_is_the_same_function_in_both_renderers(self):
         """The TUI and the headless CLI each define it; they must not drift.
@@ -1226,6 +1381,13 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(TUI.fmt_credit_total(value, carried),
                                  stats.fmt_credit_total(value, carried),
                                  f"value={value!r} carried={carried!r}")
+        # Coverage is the third deliberately-duplicated rule: two copies that
+        # render one window differently would be two answers to one question.
+        for covered, requests in ((0, 0), (0, 1), (1, 2), (71, 40_052),
+                                  (3, 3)):
+            self.assertEqual(TUI.fmt_coverage(covered, requests),
+                             stats.fmt_coverage(covered, requests),
+                             f"covered={covered!r} requests={requests!r}")
 
 
 

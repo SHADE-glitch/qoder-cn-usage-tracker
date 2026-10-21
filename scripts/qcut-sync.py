@@ -91,13 +91,14 @@ CLAIMED_RECORD_TYPES = frozenset({
     "assistant", "user", "runtime-config", "workspace-directories",
 })
 NOOP_RECORD_TYPES = frozenset({
-    "active-leaf", "attachment", "file-history-snapshot", "last-prompt",
+    "active-leaf", "ai-title", "attachment", "file-history-snapshot", "last-prompt",
     "custom-title", "worktree-state", "system",
 })
-# `last-prompt` and `custom-title` carry free prose (the user's own prompt and
-# the AI-written title). They are claimed and dropped, never read. `system` is
-# dropped too: it has no branch, and a type in CLAIMED with no handler is the
-# one mistake this split exists to prevent — it would read as "parsed".
+# `last-prompt`, `custom-title` and the CLI 1.1.75 `ai-title` carry free prose
+# (the user's own prompt and the AI-written title). They are claimed and dropped,
+# never read. `system` is dropped too: it has no branch, and a type in CLAIMED
+# with no handler is the one mistake this split exists to prevent — it would
+# read as "parsed".
 
 # --- classification tables -------------------------------------------------
 
@@ -119,8 +120,10 @@ DEFAULT_AGENT_TYPE = "general-purpose"
 # Subagent types observed here; the set only feeds the "available" inventory.
 BUILTIN_AGENTS = {"Explore", "Plan", "general-purpose"}
 
-# Qoder's own model routes report credits and no token counts; a BYOK route
-# reports tokens and no credits. Recorded verbatim — see the model_calls DDL.
+# Qoder's own model routes report credits and, without the CLI token flag, zero
+# token counts; a BYOK route reports tokens and no credits. With
+# QODERCN_EXPOSE_TOKEN_USAGE=1 a hosted route writes both. Recorded verbatim —
+# see the model_calls DDL.
 PROVIDER_BUILTIN = "builtin"
 
 # Vendor names for a BYOK base URL host. The label is read from the configured
@@ -669,7 +672,9 @@ def _handle_record(conn, rec, providers, skill_owner, fallback_project, counts) 
         if not isinstance(msg, dict):
             return
         _upsert_session(conn, rec, ts, project)
-        _record_model_call(conn, rec, msg, ts, project, providers)
+        inserted = _record_model_call(conn, rec, msg, ts, project, providers)
+        if inserted:
+            _bump(counts, "model_calls", inserted)
         content = msg.get("content")
         if isinstance(content, list):
             for block in content:
@@ -845,6 +850,15 @@ def format_doc() -> str:
         lines.append(f"- {label}: {', '.join(sorted(fields))}")
     lines += [
         "",
+        "## Token capture (environment)",
+        "",
+        f"- variable: `{db.TOKEN_ENV_NAME}=1`",
+        "- scope: the process that runs the Qoder CN CLI, not qcut",
+        "- unset: hosted routes write a literal 0 in every token field and real credits",
+        "- set: hosted routes write real input/output/cache-read/cache-creation tokens;"
+        " credits may also be present",
+        "- past calls: already written with zeros and cannot be recovered by qcut",
+        "",
         "## Classification",
         "",
         f"- skill tool: `{SKILL_TOOL}` (arguments "
@@ -923,8 +937,8 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         scanned += 1
 
     for reason, n in counts.items():
-        if reason in ("tool_calls", "tool_results", "skill_calls", "agent_calls",
-                      "mcp_calls", "commands"):
+        if reason in ("model_calls", "tool_calls", "tool_results", "skill_calls",
+                      "agent_calls", "mcp_calls", "commands"):
             continue
         db.note_unparsed(conn, reason, n)
     conn.commit()

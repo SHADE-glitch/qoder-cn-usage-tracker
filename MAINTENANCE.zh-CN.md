@@ -9,10 +9,24 @@
 [`docs/maintenance/qoder-format.md`](docs/maintenance/qoder-format.md)，它由代码生成——用
 `qcut format --write` 重新生成，并且把登记表和处理函数**放在同一个 commit 里**改。
 
-第二个风险是这个工具特有的，而且很容易搞错：两根度量轴是**互补**关系，不是"缺了一半"。Qoder
-自有路由上报积分、并把每个 token 字段填成字面量 `0`；BYOK 路由上报 token、且根本没有 `credits`
-字段。读法（`—` / `-` / 数字，以及它们背后那条唯一判定）写在 `AGENTS.md` § 硬性规则；实测分布写在
+第二个风险是这个工具特有的，而且很容易搞错：token 与积分**不是互补**关系。只要 CLI 自己的环境里
+有 `QODERCN_EXPOSE_TOKEN_USAGE=1`，托管路由的一次响应就会同时带来真实 token **和**积分；没有这个
+变量时，同一条路由只有积分、四个 token 字段全是字面量 `0`，而 qcut 无法修复这段历史。覆盖率是
+**上报了 token 的请求**所占的比例——绝不是 token 体积的占比，也绝不从积分估算。读法（`—` / `-` /
+数字，以及它们背后那条唯一判定）写在 `AGENTS.md` § 硬性规则；实测分布写在
 [`docs/maintenance/baseline.md`](docs/maintenance/baseline.md)。**永远不要由一根轴推算另一根。**
+
+## Qoder CN CLI 升级之后
+
+1. 同步进一个一次性库（`QCUT_DB=/tmp/qcut-check.db qcut sync --quiet`）并读 `qcut health`。
+   `unparsed` 里出现点名某个记录类型的新原因，说明格式动了：把它认领为 no-op 或正式处理，并在
+   同一次改动里用 `qcut format --write` 重新生成
+   [`qoder-format.md`](docs/maintenance/qoder-format.md)。
+2. 在**隔离的 shell** 里复验 token 捕获：设置 `QODERCN_EXPOSE_TOKEN_USAGE=1`，发起一次托管调用，
+   把那一次会话同步进临时库，再读 `qcut stats` / `qcut models`。托管调用必须上报非零的输入 /
+   输出 token（积分也可能同时存在），覆盖率必须上升。没有这个变量时同一次调用会存 0 token——
+   这个差异就是变量仍然生效的证明。
+3. 绝不对实时索引做探针，绝不写入 `~/.qoder-cn`。
 
 ## 验证档位
 - **L0** —— `python3 -m unittest discover -s scripts/tests`（临时数据库，不碰主机）。有两套需要
@@ -30,7 +44,8 @@
 find ~/.qoder-cn/projects -name '*.jsonl' | wc -l      # 源文件数
 QCUT_DB=/tmp/qcut-check.db qcut sync --quiet           # 重建索引；打印每表行数
 QCUT_DB=/tmp/qcut-check.db qcut health                 # 设置、各表计数、未认领原因
-QCUT_DB=/tmp/qcut-check.db qcut models                 # 按路由的积分/token 分布
+QCUT_DB=/tmp/qcut-check.db qcut models                 # 按路由的积分、token 与覆盖率
+QCUT_DB=/tmp/qcut-check.db qcut env                    # 捕获开关状态与索引覆盖率
 ```
 
 面板空了时第一个要读的是 `qcut health`：`unparsed` 里出现点名某个记录类型的原因，说明格式动了；

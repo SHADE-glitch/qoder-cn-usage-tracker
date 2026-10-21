@@ -169,12 +169,13 @@ class CacheMissDerivationTest(unittest.TestCase):
 class TokenReportingTest(unittest.TestCase):
     """`—` versus `0`, and the one predicate that decides which is drawn.
 
-    Qoder's own routes bill in credits and answer every token field with a
-    literal ``0``; a BYOK route is the reverse. So a ``0`` in a token column is
-    not a measurement, and neither is a sum of them. The decision is
-    ``_TOKENS_REPORTED_EXPR`` in SQL and ``row_reports_tokens`` in Python —
-    these cases hold the two together, because a dash that disagrees with the
-    ``Tok reported`` column would be a second way to lie.
+    A token field of ``0`` is not a measurement: it is what a hosted call writes
+    when the CLI ran without ``QODERCN_EXPOSE_TOKEN_USAGE=1``, and neither the
+    field nor a sum of them becomes a token count. The decision is
+    ``_TOKEN_COVERED_EXPR`` in SQL and ``row_reports_tokens`` in Python — these
+    cases hold the two together, because a dash that disagrees with the coverage
+    count would be a second way to lie. Credits and tokens are independent axes:
+    a hosted call may report both, only credits, or only tokens.
     """
 
     COLUMNS = ("message_id", "session_id", "project", "ts", "model", "provider",
@@ -193,28 +194,35 @@ class TokenReportingTest(unittest.TestCase):
 
     def insert(self, *rows):
         """rows: (message_id, model, input, output, cache_read, cache_write, credits)"""
+        self.insert_providers(*[
+            (mid, model, "builtin", i, o, cr, cw, credits)
+            for mid, model, i, o, cr, cw, credits in rows])
+
+    def insert_providers(self, *rows):
+        """rows: (message_id, model, provider, input, output, cache_read,
+        cache_write, credits)"""
         conn = self.t.conn()
         conn.executemany(
             "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
             " provider, input_tokens, output_tokens, cache_read_tokens,"
             " cache_creation_tokens, credits, has_usage) VALUES"
-            " (?,?, '/a', ?, ?, 'builtin', ?, ?, ?, ?, ?, 1)",
-            [(mid, "s1", ms_on(0), model, i, o, cr, cw, credits)
-             for mid, model, i, o, cr, cw, credits in rows])
+            " (?,?, '/a', ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            [(mid, "s1", ms_on(0), model, provider, i, o, cr, cw, credits)
+             for mid, model, provider, i, o, cr, cw, credits in rows])
         conn.commit()
         conn.close()
 
-    def _all_reported_counts(self):
+    def _all_covered_counts(self):
         """The same window through every query that shows a token number."""
         conn = self.t.conn()
         try:
             got = {
-                "kpi": db.q_usage_kpi(conn)["tokens_reported"],
-                "summary": db.q_usage_summary(conn, None, None)["tokens_reported"],
-                "models": {r["model"]: r["tokens_reported"]
+                "kpi": db.q_usage_kpi(conn)["token_covered"],
+                "summary": db.q_usage_summary(conn, None, None)["token_covered"],
+                "models": {r["model"]: r["token_covered"]
                            for r in db.q_models(conn)},
                 "entity": db.q_entity_summary(conn, "model", "qfmodel",
-                                              None, None)["tokens_reported"],
+                                              None, None)["token_covered"],
             }
         finally:
             conn.close()
@@ -222,7 +230,7 @@ class TokenReportingTest(unittest.TestCase):
 
     def test_a_credits_only_row_does_not_count_as_reporting_tokens(self):
         self.insert(("m1", "qfmodel", 0, 0, 0, 0, 5.0))
-        counts = self._all_reported_counts()
+        counts = self._all_covered_counts()
         self.assertEqual(counts["kpi"], 0)
         self.assertEqual(counts["summary"], 0)
         self.assertEqual(counts["models"]["qfmodel"], 0)
@@ -235,7 +243,7 @@ class TokenReportingTest(unittest.TestCase):
         # Usage panels while the Tokens tab called it reported. One expression
         # now, and this is the shape that separates them.
         self.insert(("m1", "qfmodel", 0, 0, 0, 7, 1.0))
-        counts = self._all_reported_counts()
+        counts = self._all_covered_counts()
         self.assertEqual(counts["kpi"], 1)
         self.assertEqual(counts["summary"], 1)
         self.assertEqual(counts["models"]["qfmodel"], 1)
@@ -253,7 +261,7 @@ class TokenReportingTest(unittest.TestCase):
         conn = self.t.conn()
         try:
             sql = conn.execute(
-                "SELECT message_id, CASE WHEN " + db._TOKENS_REPORTED_EXPR +
+                "SELECT message_id, CASE WHEN " + db._TOKEN_COVERED_EXPR +
                 " THEN 1 ELSE 0 END AS rep FROM model_calls").fetchall()
             rows = {r["message_id"]: r for r in conn.execute(
                 "SELECT * FROM model_calls").fetchall()}
@@ -267,9 +275,46 @@ class TokenReportingTest(unittest.TestCase):
         self.insert(("m1", "qfmodel", 0, 0, 0, 0, 5.0),
                     ("m2", "qfmodel", 0, 0, 0, 0, 2.0),
                     ("m3", "ark", 100, 10, 0, 0, None))
-        counts = self._all_reported_counts()
+        counts = self._all_covered_counts()
         self.assertEqual(counts["kpi"], 1)
         self.assertEqual(counts["models"], {"qfmodel": 0, "ark": 1})
+
+    def test_the_three_states_partition_every_request(self):
+        """Legacy hosted, hosted-with-flag, and BYOK in one window.
+
+        The three counts are a partition, not flags: every request lands in
+        exactly one, whatever mix of credits and tokens it carried. Tokens and
+        credits coexist on `hosted`; the BYOK row has no credits field at all.
+        """
+        self.insert_providers(
+            ("legacy", "qfmodel", "builtin", 0, 0, 0, 0, 5.0),
+            ("hosted", "qfmodel", "builtin", 100, 10, 80, 0, 1.0),
+            ("byok", "ark", "Volcano ARK", 120, 24, 60, 0, None))
+        conn = self.t.conn()
+        try:
+            kpi = db.q_usage_kpi(conn)
+            summary = db.q_usage_summary(conn, None, None)
+            rows = {(r["model"], r["provider"]): r for r in db.q_models(conn)}
+        finally:
+            conn.close()
+        for data in (kpi, summary):
+            self.assertEqual(data["requests"], 3)
+            self.assertEqual(data["token_covered"], 2)
+            self.assertEqual(data["credits_only"], 1)
+            self.assertEqual(data["unmeasured"], 0)
+            self.assertEqual(data["token_covered"] + data["credits_only"]
+                             + data["unmeasured"], data["requests"])
+            self.assertAlmostEqual(data["token_coverage"], 2 / 3)
+        # The token sums cover only the measured requests; the credit sum
+        # covers only the rows that carried credits. Neither is a total.
+        self.assertEqual(kpi["input_tokens"], 220)
+        self.assertEqual(kpi["output_tokens"], 34)
+        self.assertEqual(kpi["credits"], 6.0)
+        self.assertEqual(rows[("qfmodel", "builtin")]["token_covered"], 1)
+        self.assertEqual(rows[("qfmodel", "builtin")]["credits_only"], 1)
+        self.assertEqual(rows[("qfmodel", "builtin")]["unmeasured"], 0)
+        self.assertEqual(rows[("ark", "Volcano ARK")]["token_covered"], 1)
+        self.assertEqual(rows[("ark", "Volcano ARK")]["credits_only"], 0)
 
     # --- the headless report renders the same decision ---------------------
 
@@ -293,7 +338,9 @@ class TokenReportingTest(unittest.TestCase):
         self.assertRegex(out, r"cache read tokens\s+—")
         # The money axis is a real measurement, so it stays a number.
         self.assertRegex(out, r"credits\s+5\.00")
-        self.assertIn("instead of 0", out)
+        self.assertRegex(out, r"token coverage\s+0\.0% \(0/1\)")
+        self.assertRegex(out, r"credits-only\s+1")
+        self.assertIn(db.TOKEN_ENV_NAME, out)
 
     def test_stats_keeps_numbers_where_a_route_reported_tokens(self):
         self.insert(("m1", "ark", 100, 10, 80, 0, None))
@@ -301,31 +348,37 @@ class TokenReportingTest(unittest.TestCase):
         self.assertRegex(out, r"input tokens\s+100")
         self.assertRegex(out, r"output tokens\s+10")
         self.assertRegex(out, r"cache read tokens\s+80")
+        self.assertRegex(out, r"token coverage\s+100\.0% \(1/1\)")
         self.assertNotRegex(out, r"tokens\s+—")
-        self.assertNotIn("instead of 0", out)
+        self.assertNotIn("note:", out)
 
-    def test_an_empty_window_keeps_its_zeros(self):
-        # `—` describes a route that answers in credits instead of tokens. With
-        # no responses at all there is no route to describe, so the zero is the
-        # truthful reading and the note must not fire.
+    def test_an_empty_window_reports_no_measurement(self):
+        # With no responses there is no route to describe: a NULL sum reads `-`,
+        # not the `—` that says "this call answered in credits instead of
+        # tokens", and the capture note must not fire.
         _, out = self._run(self.stats.cmd_stats, type("A", (), {})())
-        self.assertRegex(out, r"input tokens\s+0\n")
+        self.assertRegex(out, r"input tokens\s+-\n")
+        self.assertRegex(out, r"token coverage\s+-\n")
         self.assertNotRegex(out, r"tokens\s+—")
-        self.assertNotIn("instead of 0", out)
+        self.assertNotIn("note:", out)
 
-    def test_models_dash_only_the_row_that_reports_no_token(self):
+    def test_models_show_partial_coverage_beside_a_partial_token_sum(self):
         self.insert(("m1", "qfmodel", 0, 0, 0, 0, 5.0),
-                    ("m2", "ark", 100, 10, 80, 0, None))
+                    ("m2", "qfmodel", 100, 10, 80, 0, 1.0),
+                    ("m3", "ark", 0, 0, 0, 0, None))
         _, out = self._run(self.stats.cmd_models,
                            type("A", (), {"limit": None})())
         lines = {l.split()[0]: l for l in out.splitlines()
                  if l.strip().startswith(("qfmodel", "ark"))}
         self.assertEqual(len(lines), 2, out)
-        self.assertIn("—", lines["qfmodel"])
-        self.assertNotIn("—", lines["ark"])
-        # ...and the yes/no column is the same fact, so it cannot disagree.
-        self.assertTrue(lines["qfmodel"].rstrip().endswith("no"), lines["qfmodel"])
-        self.assertTrue(lines["ark"].rstrip().endswith("yes"), lines["ark"])
+        # A mixed model keeps the token it measured *and* the coverage that
+        # says it describes one of two requests.
+        self.assertIn("50.0% (1/2)", lines["qfmodel"])
+        self.assertIn("100", lines["qfmodel"])
+        self.assertNotIn("—", lines["qfmodel"])
+        # A model with no measurement still shows its credits and a zero share.
+        self.assertIn("0.0% (0/1)", lines["ark"])
+        self.assertIn("—", lines["ark"])
 
     def test_show_dashes_one_model_and_its_own_history_rows(self):
         self.insert(("m1", "qfmodel", 0, 0, 0, 0, 5.0),
@@ -335,8 +388,9 @@ class TokenReportingTest(unittest.TestCase):
         code, out = self._run(self.stats.cmd_show, args)
         self.assertEqual(code, 0)
         # Both halves of the screen: the window summary, which carries the
-        # `tokens_reported` count...
+        # `token_covered` count...
         self.assertRegex(out, r"input_tokens\s+—")
+        self.assertRegex(out, r"coverage\s+0\.0%")
         # ...and the per-row history, which does not, so it must fall back to
         # the row's own fields rather than print a structural zero.
         self.assertIn("input_tokens=—", out)
@@ -398,8 +452,9 @@ class TokenReportingTest(unittest.TestCase):
         self.insert(("m1", "ark", 100, 10, 80, 0, None))
         _, out = self._run(self.stats.cmd_models, type("A", (), {"limit": None})())
         row = [l for l in out.splitlines() if l.strip().startswith("ark")][0]
-        # `-` (never billed in this unit) and not `0` (billed nothing).
-        self.assertIn(" - ", row)
+        # `-` (never billed in this unit) and not `0` (billed nothing). The
+        # credits column is last; the coverage column sits before the tokens.
+        self.assertTrue(row.rstrip().endswith("-"), row)
         self.assertNotRegex(row, r"\b0\.00\b")
 
     def test_stats_reports_an_unbilled_window_as_absent_credits(self):
@@ -492,8 +547,9 @@ class QueryTest(unittest.TestCase):
             conn.close()
         self.assertEqual(rows[("qfmodel", "builtin")]["requests"], 2)
         self.assertEqual(rows[("qfmodel", "builtin")]["credits"], 7.0)
-        self.assertEqual(rows[("qfmodel", "builtin")]["tokens_reported"], 0)
-        self.assertEqual(rows[("ark-code-latest", "Volcano ARK")]["tokens_reported"], 1)
+        self.assertEqual(rows[("qfmodel", "builtin")]["token_covered"], 0)
+        self.assertEqual(rows[("qfmodel", "builtin")]["credits_only"], 2)
+        self.assertEqual(rows[("ark-code-latest", "Volcano ARK")]["token_covered"], 1)
 
     def test_a_server_less_mcp_row_is_not_dropped(self):
         """`m.server = p.server` is never true when both are NULL, which once
@@ -519,6 +575,87 @@ class QueryTest(unittest.TestCase):
             conn.close()
         self.assertIn(("unused-srv", None), rows)
         self.assertEqual(rows[("unused-srv", None)]["calls"], 0)
+
+    def test_model_history_and_summary_narrow_to_the_selected_provider(self):
+        conn = self.t.conn()
+        try:
+            conn.execute(
+                "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+                " provider, input_tokens, output_tokens, cache_read_tokens,"
+                " cache_creation_tokens, credits, has_usage) VALUES"
+                " ('m4','s1','/a',?, 'qfmodel','Volcano ARK', 50,5,40,0,NULL,1)",
+                (ms_on(1),))
+            conn.commit()
+            wide = db.q_history(conn, "model", "qfmodel")
+            narrowed = db.q_history(conn, "model", "qfmodel",
+                                    provider="Volcano ARK")
+            summary = db.q_entity_summary(conn, "model", "qfmodel",
+                                          provider="Volcano ARK")
+        finally:
+            conn.close()
+        self.assertEqual(len(wide), 3)
+        self.assertEqual([r["call_id"] for r in narrowed], ["m4"])
+        self.assertEqual(summary["calls"], 1)
+        self.assertEqual(summary["token_covered"], 1)
+        self.assertEqual(summary["input_tokens"], 50)
+
+    def test_mcp_history_narrows_to_the_selected_tool(self):
+        conn = self.t.conn()
+        try:
+            conn.execute(
+                "INSERT INTO mcp_usage(call_id, server, tool, admin_op, session_id,"
+                " project, ts, status) VALUES"
+                " ('c5','node-repl','js','call','s1','/a',?, 'completed')",
+                (ms_on(1),))
+            conn.commit()
+            server = db.q_history(conn, "mcp", "node-repl")
+            tool = db.q_history(conn, "mcp", "node-repl", tool="node_repl")
+            summary = db.q_entity_summary(conn, "mcp", "node-repl",
+                                          tool="node_repl")
+        finally:
+            conn.close()
+        self.assertEqual({r["call_id"] for r in server}, {"c4", "c5"})
+        self.assertEqual([r["call_id"] for r in tool], ["c4"])
+        self.assertEqual(summary["calls"], 1)
+
+    def test_commands_rank_by_calls_and_honour_limit(self):
+        conn = self.t.conn()
+        try:
+            conn.executemany(
+                "INSERT INTO commands(command, session_id, project, ts)"
+                " VALUES (?,?,?,?)",
+                [("deploy", "s1", "/a", ms_on(0)),
+                 ("deploy", "s2", "/b", ms_on(1)),
+                 ("review", "s1", "/a", ms_on(2))])
+            conn.commit()
+            rows = db.q_commands(conn)
+            top = db.q_commands(conn, limit=1)
+        finally:
+            conn.close()
+        self.assertEqual([(r["command"], r["calls"], r["sessions"])
+                          for r in rows],
+                         [("deploy", 2, 2), ("review", 1, 1)])
+        self.assertEqual([r["command"] for r in top], ["deploy"])
+
+    def test_duplicate_inventory_rows_do_not_multiply_plugin_uses(self):
+        conn = self.t.conn()
+        try:
+            conn.executemany(
+                "INSERT INTO inventory(kind,name,owner_plugin,version,path,source)"
+                " VALUES ('plugin','demo-plugin',?,?,'/p', ?)",
+                [(None, "1.2.3", "marketplace"),
+                 ("other", "1.2.3", "marketplace")])
+            conn.execute(
+                "INSERT INTO plugin_usage(plugin, kind, target, session_id,"
+                " project, ts) VALUES"
+                " ('demo-plugin','skill','demo-skill','s1','/a',?)",
+                (ms_on(0),))
+            conn.commit()
+            row = {r["plugin"]: r for r in db.q_plugins(conn)}["demo-plugin"]
+        finally:
+            conn.close()
+        self.assertEqual(row["uses"], 1)
+        self.assertEqual(row["version"], "1.2.3")
 
     def test_kpi_sums_inside_one_window(self):
         conn = self.t.conn()

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """qcut-stats — headless reports over the Qoder CN usage index.
 
-Read-only: every subcommand below only reads the database. The two maintenance
-subcommands (`backup`, `restore`) and `format --write` are the only writers, and
-each says so in its own help.
+Read-only: every report subcommand only reads the database. The maintenance
+subcommands (`backup`, `restore`, `vacuum`) and `format --write` are the only
+writers, and each says so in its own help.
 
     python3 scripts/qcut-stats.py stats            # overview of every category
     python3 scripts/qcut-stats.py tools|skills|agents|plugins|mcp
     python3 scripts/qcut-stats.py models           # per-model tokens + credits
+    python3 scripts/qcut-stats.py commands         # slash-command usage
     python3 scripts/qcut-stats.py show tool Bash   # recent calls for one entity
     python3 scripts/qcut-stats.py recent
     python3 scripts/qcut-stats.py inventory        # installed, used vs unused
     python3 scripts/qcut-stats.py export           # every table as JSON
     python3 scripts/qcut-stats.py health           # database + data-source check
+    python3 scripts/qcut-stats.py env              # token-capture advice
+    python3 scripts/qcut-stats.py vacuum           # compact (snapshots first)
     python3 scripts/qcut-stats.py format           # the Qoder format surface
 
 Standard library only.
@@ -22,6 +25,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -74,6 +79,18 @@ def fmt_tok(value, reported):
     if not reported and not value:
         return "—"
     return fmt_n(value)
+
+
+def fmt_coverage(covered, requests):
+    """Token-covered requests as a share of all requests, or ``-`` when empty.
+
+    Mirrors the TUI's formatter. Coverage is a share of *requests*, never of
+    token volume: the tokens a legacy hosted call hid are unknowable.
+    """
+    frac = db.token_coverage(covered or 0, requests or 0)
+    if frac is None:
+        return "-"
+    return f"{frac * 100:.1f}% ({covered or 0:,}/{requests or 0:,})"
 
 
 def fmt_credit_total(value, carried):
@@ -129,13 +146,17 @@ def _limit(args, default=50):
 
 def cmd_stats(conn, args):
     k = db.q_usage_kpi(conn)
-    # One flag decides every token line below, exactly as the TUI's single
-    # `tokens_reported` decides its panels and its `Tok reported` column. An
-    # empty window is not a route that withheld its tokens — `q_usage_kpi`
-    # flattens NULL to 0, so the "no responses here" case has to be named here
-    # or it would be drawn as the `—` that means "credits instead of tokens".
-    k_tok = not k["requests"] or bool(k["tokens_reported"])
     o = db.q_overview(conn)
+    commands = db.q_commands(conn)
+
+    # Three states, one per line: an empty window is `-`, a window whose rows
+    # never reported a token is `—`, and a real sum is a numeral. The coverage
+    # lines name how many requests the token sums actually describe.
+    def token_line(value):
+        if not k["requests"]:
+            return "-"
+        return fmt_tok(value, bool(k["token_covered"]))
+
     # `all time` means the whole index, so the index says how far it reaches:
     # a stopped cursor and an idle week both print as a quiet week otherwise.
     span = "-" if not (o["first_ts"] or o["last_ts"]) \
@@ -148,9 +169,12 @@ def cmd_stats(conn, args):
         f"  range                {span}",
         "",
         f"  model requests       {fmt_n(k['requests'])}",
-        f"  input tokens         {fmt_tok(k['input_tokens'], k_tok)}",
-        f"  output tokens        {fmt_tok(k['output_tokens'], k_tok)}",
-        f"  cache read tokens    {fmt_tok(k['cache_read_tokens'], k_tok)}",
+        f"  token coverage       {fmt_coverage(k['token_covered'], k['requests'])}",
+        f"  credits-only         {fmt_n(k['credits_only'])}",
+        f"  unmeasured           {fmt_n(k['unmeasured'])}",
+        f"  input tokens         {token_line(k['input_tokens'])}",
+        f"  output tokens        {token_line(k['output_tokens'])}",
+        f"  cache read tokens    {token_line(k['cache_read_tokens'])}",
         f"  credits              {fmt_credit_total(k['credits'], k['credits_carried'])}",
         "",
         f"  tool calls           {fmt_n(k['tool_calls'])}"
@@ -162,14 +186,23 @@ def cmd_stats(conn, args):
         f"  ({fmt_n(k['agent_names'])} types)",
         f"  mcp calls            {fmt_n(k['mcp_calls'])}"
         f"  ({fmt_n(k['mcp_servers'])} servers)",
+        f"  slash commands       {fmt_n(sum(r['calls'] for r in commands))}"
+        f"  ({fmt_n(len(commands))} distinct)",
     ]
-    if not k_tok and k["credits"]:
+    if k["requests"] and k["token_covered"] < k["requests"]:
+        if k["token_covered"]:
+            note = (f"token sums cover only the {k['token_covered']:,} of "
+                    f"{k['requests']:,} requests that reported one "
+                    f"({fmt_coverage(k['token_covered'], k['requests'])}).")
+        else:
+            note = ("no request in this index reported a token, so the token "
+                    "lines above read `—`.")
         lines += [
             "",
-            "  note: no response reported token counts, so the three token lines",
-            "        above read `—` instead of 0. Qoder's own routes bill in credits",
-            "        and answer every token field with a literal 0; a BYOK route is",
-            "        the reverse. Both are stored as reported, never converted.",
+            f"  note: {note}",
+            "        Hosted calls written without the env flag store a literal 0 in",
+            "        every token field; qcut cannot recover them. Run `qcut env` to",
+            f"        capture real tokens on future CLI calls ({db.TOKEN_ENV_NAME}=1).",
         ]
     print("\n".join(lines))
     return 0
@@ -221,23 +254,35 @@ def cmd_models(conn, args):
         return 0
     cur = []
     for r in rows:
-        rep = bool(r["tokens_reported"])
-        tok = r["input_tokens"] or 0
-        api_total = tok + (r["output_tokens"] or 0)
+        rep = bool(r["token_covered"])
         cur.append([
             r["model"], r["provider"] or "-", fmt_n(r["requests"]),
+            fmt_coverage(r["token_covered"], r["requests"]),
             fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
-            fmt_tok(api_total, rep),
+            fmt_tok(r["total_tokens"], rep),
             fmt_tok(r["cache_read_tokens"], rep),
             fmt_credit_total(r["credits"], r["credits_carried"]),
-            "yes" if rep else "no",
         ])
-    print(table(["model", "provider", "requests", "input", "output", "api total",
-                 "cache read", "credits", "tokens?"], cur,
-                aligns=["<", "<", ">", ">", ">", ">", ">", ">", "<"]))
+    print(table(["model", "provider", "requests", "coverage", "input", "output",
+                 "api total", "cache read", "credits"], cur,
+                aligns=["<", "<", ">", ">", ">", ">", ">", ">", ">"]))
     print()
     print("  api total = input + output (input already contains cache read on this shape)")
-    print("  tokens? = the route reported a non-zero token count for at least one response")
+    print("  coverage = requests that reported any non-zero token; token columns sum")
+    print("             only those requests. Credits and tokens can coexist; `-` means")
+    print("             no field was present, `—` means the route reported zero.")
+    return 0
+
+
+def cmd_commands(conn, args):
+    rows = db.q_commands(conn, limit=_limit(args))
+    if not rows:
+        print("no slash commands recorded yet — run `qcut sync`")
+        return 0
+    cur = [[r["command"], fmt_n(r["calls"]), fmt_n(r["sessions"]),
+            ts(r["last_used"])] for r in rows]
+    print(table(["command", "calls", "sessions", "last used"], cur,
+                aligns=["<", ">", ">", "<"]))
     return 0
 
 
@@ -256,6 +301,9 @@ def cmd_plugins(conn, args):
 _SHOW_LABELS = {
     "avg_ms": "avg", "duration_ms": "duration", "first_used": "first used",
     "last_used": "last used", "is_sidechain": "sidechain", "admin_op": "op",
+    "token_covered": "token covered", "credits_only": "credits-only",
+    "unmeasured": "unmeasured", "token_coverage": "coverage",
+    "missing_input": "missing input", "missing_output": "missing output",
 }
 
 
@@ -273,15 +321,17 @@ def _fmt_field(key, value, row=None):
         return ts(value)
     if key in ("ms", "avg_ms", "duration_ms"):
         return ms(value)
+    if key == "token_coverage":
+        return "-" if value is None else f"{value * 100:.1f}%"
     if key == "credits":
         if row is not None and "credits_carried" in row.keys():
             return fmt_credit_total(value, row["credits_carried"])
         return fmt_credits(value)
     if row is not None and key in db.TOKEN_COLUMNS:
         keys = row.keys()
-        # A summary carries the `tokens_reported` count; a history row does not,
+        # A summary carries the `token_covered` count; a history row does not,
         # so it falls back to the same field-by-field test the SQL applies.
-        reported = (bool(row["tokens_reported"]) if "tokens_reported" in keys
+        reported = (bool(row["token_covered"]) if "token_covered" in keys
                     else db.row_reports_tokens(row))
         return fmt_tok(value, reported)
     return fmt_n(value) if isinstance(value, int) else value
@@ -325,18 +375,22 @@ def cmd_inventory(conn, args):
     rows = db.q_inventory(conn, args.kind)
     used = {}
     for kind, query in (("tool", db.q_tools), ("skill", db.q_skills),
-                        ("agent", db.q_agents), ("plugin", db.q_plugins)):
+                        ("agent", db.q_agents), ("plugin", db.q_plugins),
+                        ("command", db.q_commands)):
         for r in query(conn):
             key = r[0]
             used[(kind, key)] = r["calls"] if "calls" in r.keys() else r["uses"]
+    # Inventory names MCP *servers*; usage rows are (server, tool). Summing per
+    # server is the only key the two tables share.
     mcp_used = {}
     for r in db.q_mcp(conn):
-        mcp_used[(r["server"], r["tool"])] = r["calls"]
+        if r["server"]:
+            mcp_used[r["server"]] = mcp_used.get(r["server"], 0) + (r["calls"] or 0)
     cur = []
     for r in rows:
         kind, name = r["kind"], r["name"]
         if kind == "mcp":
-            count = mcp_used.get((name, None), 0)
+            count = mcp_used.get(name, 0)
         else:
             count = used.get((kind, name), 0)
         cur.append([kind, name, r["owner_plugin"] or "-", r["version"] or "-",
@@ -375,12 +429,23 @@ def cmd_export(conn, args):
     return 0
 
 
+def _token_env_state():
+    """The flag as this process sees it — qcut reads it, never sets it."""
+    value = os.environ.get(db.TOKEN_ENV_NAME)
+    if value is None:
+        return "not set (hosted calls will store 0 tokens)"
+    if value == "1":
+        return "set to 1 (hosted calls should carry real tokens)"
+    return f"set to {value!r} (the documented switch is =1)"
+
+
 def cmd_health(conn, args):
     path = db.db_file(conn)
     missing = path is None or not path.exists()
     print(f"database: {path or getattr(args, 'db', '(in memory)')}"
           + (" (not created yet — run `qcut sync`)" if missing else ""))
     print(f"schema:   v{db.stored_version(conn)} (tool expects v{db.SCHEMA_VERSION})")
+    print(f"tokens:   {db.TOKEN_ENV_NAME} {_token_env_state()}")
     if missing:
         print()
         print("the index does not exist yet; `qcut sync` builds it from")
@@ -404,6 +469,12 @@ def cmd_health(conn, args):
     width = max(len(k) for k in counts)
     for key, value in counts.items():
         print(f"  {key:<{width}} {fmt_n(value) if value is not None else 'n/a'}")
+    if db.stored_version(conn) >= db.SCHEMA_VERSION:
+        k = db.q_usage_kpi(conn)
+        print()
+        print(f"  coverage  {fmt_coverage(k['token_covered'], k['requests'])} "
+              f"token-covered · {fmt_n(k['credits_only'])} credits-only · "
+              f"{fmt_n(k['unmeasured'])} unmeasured")
     print()
     unparsed = db.q_unparsed(conn)
     if unparsed:
@@ -412,6 +483,40 @@ def cmd_health(conn, args):
             print(f"  {row['reason']:<28} {fmt_n(row['count'])}")
     else:
         print("unclaimed records: none")
+    return 0
+
+
+def cmd_env(conn, args):
+    """Explain token capture, and what this index currently covers.
+
+    Read-only by design: the flag has to be present when the *CLI* starts, so
+    qcut cannot set it for future sessions, and editing a shell profile on the
+    user's behalf is exactly the kind of host write this tracker avoids.
+    """
+    value = os.environ.get(db.TOKEN_ENV_NAME)
+    print(f"{db.TOKEN_ENV_NAME}: {_token_env_state()}")
+    print()
+    if db.stored_version(conn) >= db.SCHEMA_VERSION:
+        k = db.q_usage_kpi(conn)
+        print("index coverage")
+        print(f"  token-covered  {fmt_coverage(k['token_covered'], k['requests'])}")
+        print(f"  credits-only   {fmt_n(k['credits_only'])}")
+        print(f"  unmeasured     {fmt_n(k['unmeasured'])}")
+    else:
+        print("index coverage: no index yet — run `qcut sync`")
+    print()
+    if value != "1":
+        print("To capture real tokens on future Qoder CN CLI calls, add this line")
+        print("to your shell profile, then open a new terminal:")
+        print()
+        print(f"    export {db.TOKEN_ENV_NAME}=1")
+        print()
+        print("qcut does not edit shell profiles: the variable must be present when")
+        print("the CLI starts, not when qcut runs.")
+    else:
+        print("The flag is present in this shell. It affects future CLI calls only;")
+        print("coverage rises after the next `qcut sync` indexes one.")
+    print(f"Calls already written with zeros cannot be recovered by qcut.")
     return 0
 
 
@@ -492,6 +597,70 @@ def cmd_format(args) -> int:
     return 0
 
 
+def _file_state(conn, path):
+    """The four readings that say whether VACUUM changed the file's shape."""
+    page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    check = conn.execute("PRAGMA quick_check").fetchone()[0]
+    return {
+        "bytes": path.stat().st_size,
+        "pages": page_count,
+        "page_size": page_size,
+        "free": free,
+        "check": check,
+        "totals": db.overview(conn),
+    }
+
+
+def cmd_vacuum(args) -> int:
+    """Compact the database, snapshotting it first and verifying the result."""
+    path = Path(args.db)
+    if not path.is_file():
+        print(f"no database at {path} — run `qcut sync` first", file=sys.stderr)
+        return 1
+    conn = db.open_db(path)
+    try:
+        # Measure after folding the WAL back in: otherwise the newest pages
+        # live in `-wal`, and the "before" size is not the file being compacted.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = _file_state(conn, path)
+        snap = db.snapshot(conn, "pre-vacuum", path)
+        conn.commit()          # VACUUM cannot run inside a transaction
+        conn.execute("VACUUM")
+        after = _file_state(conn, path)
+    except sqlite3.Error as exc:
+        print(f"could not compact {path}: {exc}", file=sys.stderr)
+        if "lock" in str(exc).lower() or "busy" in str(exc).lower():
+            print("  close the TUI (and stop the qcut sync timer) and retry",
+                  file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    # The file is only truncated to its new page count when the last connection
+    # lets go, so the final size is read after close.
+    after["bytes"] = path.stat().st_size
+
+    freed = before["bytes"] - after["bytes"]
+    print(f"compacted  {path}")
+    print(f"  before     {before['bytes']:,} B ({before['pages']:,} pages of "
+          f"{before['page_size']:,} B, {before['free']:,} on the freelist)")
+    print(f"  after      {after['bytes']:,} B ({after['pages']:,} pages, "
+          f"{after['free']:,} free)")
+    print("  reclaimed  " + (f"{freed:,} B" if freed else
+                             "nothing — the file was already compact"))
+    print(f"  snapshot   {snap}")
+    if after["check"] != "ok" or after["totals"] != before["totals"]:
+        print(f"  WARNING    the file changed shape — quick_check reads "
+              f"{after['check']!r} and the row totals "
+              f"{'differ' if after['totals'] != before['totals'] else 'match'}",
+              file=sys.stderr)
+        print(f"             restore it:  qcut restore {snap.name}", file=sys.stderr)
+        return 1
+    print("  verified   quick_check ok, and every row count is what it was")
+    return 0
+
+
 def _window_from_args(args):
     if getattr(args, "range", None):
         return db.window_bounds(args.range, int(datetime.now().timestamp() * 1000))
@@ -506,11 +675,13 @@ COMMANDS = {
     "plugins": cmd_plugins,
     "mcp": cmd_mcp,
     "models": cmd_models,
+    "commands": cmd_commands,
     "show": cmd_show,
     "recent": cmd_recent,
     "inventory": cmd_inventory,
     "export": cmd_export,
     "health": cmd_health,
+    "env": cmd_env,
 }
 
 
@@ -522,9 +693,9 @@ def main(argv=None) -> int:
     # A flag is registered only on the subcommand that reads it. `--limit` on a
     # report that ignores it is not a convenience, it is a filter that looks like
     # it worked: the table comes back whole and nothing says otherwise.
-    for name in ("stats", "plugins", "models", "health"):
+    for name in ("stats", "plugins", "models", "health", "env"):
         sub.add_parser(name)
-    for name in ("tools", "skills", "agents", "mcp", "recent"):
+    for name in ("tools", "skills", "agents", "mcp", "commands", "recent"):
         sub.add_parser(name).add_argument("--limit", type=int, default=None)
 
     p = sub.add_parser("inventory")
@@ -542,6 +713,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("backup")
     p = sub.add_parser("restore")
     p.add_argument("name", nargs="?")
+    sub.add_parser("vacuum")
     p = sub.add_parser("format")
     p.add_argument("--write", action="store_true")
     p.add_argument("--out", default=None,
@@ -552,12 +724,17 @@ def main(argv=None) -> int:
     if not args.cmd:
         args.cmd = "stats"
 
-    if args.cmd in ("backup", "restore", "format"):
-        return {"backup": cmd_backup, "restore": cmd_restore, "format": cmd_format}[args.cmd](args)
+    # These open their own writable connection (or none), so they run before the
+    # shared read-only one — a report connection cannot checkpoint or VACUUM.
+    if args.cmd in ("backup", "restore", "vacuum", "format"):
+        return {"backup": cmd_backup, "restore": cmd_restore,
+                "vacuum": cmd_vacuum, "format": cmd_format}[args.cmd](args)
 
     conn = db.open_db(args.db, readonly=True)
     try:
-        if db.stored_version(conn) < db.SCHEMA_VERSION and args.cmd != "health":
+        # `health` and `env` are the two reports whose job is to say what is
+        # missing; refusing to run them on a pre-index database inverts that.
+        if db.stored_version(conn) < db.SCHEMA_VERSION and args.cmd not in ("health", "env"):
             print("index is empty or older than this tool — run `qcut sync` first",
                   file=sys.stderr)
             return 1

@@ -13,19 +13,28 @@ date, not a policy — re-measure before restating any of it.
 
 | Interpreter | Suite |
 |---|---|
-| Python 3.11.15 | green |
-| Python 3.13.14 (the `install.sh` venv) | green |
-| Python 3.14.4 | green |
+| Python 3.11.15 | 310 OK (2026-10-12; CI is the record for the 347-case suite) |
+| Python 3.13.14 (the `install.sh` venv) | 347 OK (2026-10-21) |
+| Python 3.14.4 | 310 OK (2026-10-12; CI is the record for the 347-case suite) |
 
-Measured 2026-10-12 with `textual 8.2.8` installed in each. The per-suite counts are in
-[`baseline.md`](baseline.md).
+The 310-case row is the last local measurement for that interpreter with `textual 8.2.8`; the suite
+has since grown to 347 cases. Re-run before claiming a local green on 3.11 or 3.14. The per-suite
+counts are in [`baseline.md`](baseline.md).
 
 ## Qoder CN
 
-- The schema is verified against **the transcripts on this machine**, not against a version number:
-  Qoder CN agent version `1.1.57` was the one measured (2026-10-12). No transcript line carries a
-  version the tool relies on, so the version string is context, not a contract — see
-  [`qoder-format.md`](qoder-format.md) for what is actually read.
+- The tool targets the **Qoder CN CLI**. The schema is verified against **the transcripts on this
+  machine**, not against a version number: CLI version `1.1.75` was the one measured (2026-10-21).
+  The same tree still carries desktop `1.1.57` sessions, which is the useful part — the reader
+  handles both shapes. No transcript line carries a version the tool relies on, so the version
+  string is context, not a contract — see [`qoder-format.md`](qoder-format.md) for what is actually
+  read.
+- **Hosted token capture depends on the CLI's environment.** The CLI writes real input / output /
+  cache-read / cache-creation tokens for Qoder-hosted routes only when its own process sees
+  `QODERCN_EXPOSE_TOKEN_USAGE=1` (`db.TOKEN_ENV_NAME`). qcut never sets it, never edits a shell
+  profile, and cannot repair transcripts written without it — those rows hold literal zeros and
+  real credits. Coverage (`token-covered / requests`) is the surface that says how much of the
+  index was captured this way; `qcut env` reports the flag state and the line to add.
 
 ## Textual
 
@@ -38,7 +47,8 @@ Measured 2026-10-12 with `textual 8.2.8` installed in each. The per-suite counts
 ## SQLite
 
 - The standard library's `sqlite3`; no third-party driver. The index carries schema version `1`
-  (`db.SCHEMA_VERSION`).
+  (`db.SCHEMA_VERSION`). Coverage is derived at query time, so an index written before the
+  CLI-first upgrade keeps working without a migration.
 
 ## Linux
 
