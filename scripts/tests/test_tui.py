@@ -138,7 +138,14 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
                     app.query_one("#dash-row-1")
                     app.query_one("#dash-row-2")
                     app.query_one("#dash-row-3")
-                    app.query_one("#dash-row-4")
+                    # The Runtime row (compactions, peak context, calls per day)
+                    # is gone: those numbers live on the project screen, one
+                    # Enter away, and the row cost the dashboard a third of its
+                    # height to repeat them.
+                    rows = [w.id for w in app.query(".dash-row")]
+                    self.assertEqual(rows, ["dash-row-1", "dash-row-2",
+                                            "dash-row-3"])
+                    self.assertFalse(app.query("#dash-rt-compactions"))
                     app.query_one("#panel-dash-cache")
                     continue
                 if tid == "usage":
@@ -1340,16 +1347,28 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Projects", counter)
             self.assertTrue(counter.rstrip().endswith("2"), counter)
 
-    async def test_the_dashboard_and_tokens_note_surface_the_new_ledgers(self):
+    async def test_the_project_screen_and_tokens_note_surface_the_new_ledgers(self):
+        """Compactions and peak context moved off the dashboard, not away.
+
+        They are per-project facts, so the project screen — one Enter from the
+        board — is where they belong. The dashboard row that repeated them was
+        removed; this checks they are still readable, one level down.
+        """
         from textual.widgets import Static
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
-            compactions = str(app.query_one("#dash-rt-compactions", Static).content)
-            self.assertIn("1", compactions)
-            self.assertIn("800 ctx", compactions)
-            peak = str(app.query_one("#dash-rt-peak", Static).content)
-            self.assertIn("42.0%", peak)
+            row = self._row_index(app, "dash-projects", "project\t/work/demo")
+            await self._open(app, pilot, "dash-projects", row=row)
+            head = str(app.screen.query_one("#project-head", Static).content)
+            self.assertIn("compactions = 1", head)
+            self.assertIn("context dropped = 800", head)
+            self.assertIn("peak ctx = 42.0%", head)
+            # And the dashboard itself does not repeat them.
+            app.pop_screen()
+            await pilot.pause()
+            self.assertFalse(app.query("#dash-rt-compactions"))
+            self.assertFalse(app.query("#dash-rt-peak"))
             await self._tab(app, pilot, "tokens")
             note = str(app.query_one("#filter-tokens", Static).content)
             # Coverage tracking is gone; the note keeps only the provider
@@ -1537,7 +1556,7 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_tokens_tab_dashes_a_credits_only_model_and_not_the_byok_one(self):
         hosted = await self._tokens_row("qfmodel")
-        for col in ("Usage Total", "Input", "Output", "API Total",
+        for col in ("Usage Total", "Input", "Output",
                     "Cache hit", "Cache miss", "Cache write"):
             self.assertEqual(hosted[col], "—", col)
         # What the route *does* report stays a number.

@@ -290,10 +290,10 @@ TOKEN_CAPTURE_HINT = ("token capture off — set QODERCN_EXPOSE_TOKEN_USAGE=1 "
 # Usage Total leads the measure family: it is the rank the Dashboard and the
 # Tokens tab use (then credits), so the request log presents the same hierarchy.
 USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Credits",
-                 "Input", "Output", "API Total", "Cache hit", "Cache miss",
+                 "Input", "Output", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate")
 TOKENS_COLUMNS = ("Model", "Provider", "Usage Total", "Credits", "Requests",
-                  "Input", "Output", "API Total", "Cache hit", "Cache miss",
+                  "Input", "Output", "Cache hit", "Cache miss",
                   "Cache write", "Cache hit rate", "Last used")
 
 TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "pending", "avg", "last used")
@@ -315,7 +315,7 @@ PROJECT_SESSION_COLUMNS = ("session", "last used", "requests", "usage total",
                            "credits", "peak ctx", "compactions", "compacted",
                            "model")
 SESSION_CALL_COLUMNS = ("when", "model", "provider", "agent", "credits",
-                        "usage total", "input", "output", "api total",
+                        "usage total", "input", "output",
                         "cache hit", "cache miss", "cache write", "context",
                         "sidechain")
 
@@ -326,17 +326,17 @@ HISTORY_COLUMNS = {
              "session"),
     "skill": ("when", "skill", "status", "duration", "project", "session"),
     "agent": ("when", "agent", "status", "duration", "requests",
-              "usage total", "input", "output", "api total", "cache hit",
+              "usage total", "input", "output", "cache hit",
               "cache write", "credits", "peak ctx", "project", "session"),
     "model": ("when", "model", "provider", "usage total", "credits", "input",
-              "output", "api total", "cache hit", "cache miss", "cache write",
+              "output", "cache hit", "cache miss", "cache write",
               "stop"),
     "mcp": ("when", "server", "tool", "status", "duration", "session"),
 }
 # Twelve columns need ~180 cells: on an 80-wide terminal most of this table used
 # to sit past the right edge with no key that would bring it back.
 RESPONSE_COLUMNS = ("when", "model", "provider", "usage total", "credits",
-                    "input", "output", "api total", "cache hit", "cache miss",
+                    "input", "output", "cache hit", "cache miss",
                     "cache write", "hit rate", "message id")
 # A plugin's own breakdown: attributed calls and installed resources. `state`
 # keeps the evidence apart instead of spelling "(installed)" into `target`.
@@ -360,7 +360,11 @@ CALL_DETAIL_LABELS = {
     "message_id": "message id", "stop_reason": "stop reason",
     "input_tokens": "input tokens", "output_tokens": "output tokens",
     "cache_read_tokens": "cache read", "cache_creation_tokens": "cache write",
-    "total_tokens": "api total", "usage_total_tokens": "usage total",
+    # The stored per-row total is kept on this screen (it is what the host wrote),
+    # but it is named for where it came from — the panels' one token total is
+    # `usage total`, and a second column called "api total" made two numbers look
+    # like rivals for the same job.
+    "total_tokens": "reported total", "usage_total_tokens": "usage total",
     "cache_miss_tokens": "cache miss",
     "credits": "credits", "original_credits": "list price",
     "billable": "billable", "is_sidechain": "sidechain",
@@ -382,7 +386,7 @@ SUMMARY_LABELS = {
     "avg_ms": "avg", "requests": "requests", "sessions": "sessions",
     "projects": "projects", "input_tokens": "input", "output_tokens": "output",
     "cache_read_tokens": "cache read", "cache_creation_tokens": "cache write",
-    "total_tokens": "API total", "usage_total_tokens": "usage total",
+    "usage_total_tokens": "usage total",
     "cache_miss_tokens": "cache miss", "credits": "credits",
     "original_credits": "list price", "peak_context": "peak ctx",
     "compactions": "compactions", "compacted_tokens": "context dropped",
@@ -398,7 +402,7 @@ SUMMARY_KEYS = {
     "agent": ("runs", "completed", "failed", "requests", "usage_total_tokens",
               "credits", "peak_context", "sessions", "projects", "first_used",
               "last_used"),
-    "model": ("calls", "sessions", "usage_total_tokens", "total_tokens",
+    "model": ("calls", "sessions", "usage_total_tokens",
               "credits", "cache_read_tokens", "cache_creation_tokens",
               "peak_context", "first_used", "last_used"),
     "project": ("requests", "sessions", "usage_total_tokens", "credits",
@@ -1302,7 +1306,6 @@ class HistoryScreen(WideTableMixin, Screen):
                     fmt_tok(self._usage_total(r), rep),
                     fmt_tok(r["input_tokens"], rep),
                     fmt_tok(r["output_tokens"], rep),
-                    fmt_tok(self._api_total(r), rep),
                     fmt_tok(r["cache_read_tokens"], rep),
                     fmt_tok(r["cache_creation_tokens"], rep),
                     fmt_credit_total(r["credits"], r["credits_carried"]),
@@ -1327,16 +1330,10 @@ class HistoryScreen(WideTableMixin, Screen):
                 fmt_tok(r["usage_total_tokens"], rep),
                 fmt_credits(r["credits"]),
                 fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
-                fmt_tok(r["total_tokens"], rep), fmt_tok(r["cache_read_tokens"], rep),
+                fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
                 r["stop_reason"] or "-"]
-
-    @staticmethod
-    def _api_total(r):
-        if r["input_tokens"] is None or r["output_tokens"] is None:
-            return None
-        return r["input_tokens"] + r["output_tokens"]
 
     @staticmethod
     def _usage_total(r):
@@ -1515,7 +1512,6 @@ class RequestsScreen(WideTableMixin, Screen):
                 fmt_tok(r["usage_total_tokens"], rep),
                 fmt_tok(r["input_tokens"], rep),
                 fmt_tok(r["output_tokens"], rep),
-                fmt_tok(r["total_tokens"], rep),
                 fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
@@ -1605,7 +1601,6 @@ class ModelResponsesScreen(WideTableMixin, Screen):
                         fmt_credits(r["credits"]),
                         fmt_tok(r["input_tokens"], rep),
                         fmt_tok(r["output_tokens"], rep),
-                        fmt_tok(r["total_tokens"], rep),
                         fmt_tok(r["cache_read_tokens"], rep),
                         fmt_tok(r["cache_miss_tokens"], rep),
                         fmt_tok(r["cache_creation_tokens"], rep),
@@ -1772,13 +1767,11 @@ class TrackerApp(WideTableMixin, App):
     .summary-panels { height: auto; max-height: 40%; overflow-y: auto; }
     .usage-panel { border: round $primary; padding: 0 1; margin: 0 1 0 0;
                    width: 1fr; height: auto; }
-    #panel-dash-tools, #panel-dash-cache, #panel-dash-activity { margin: 0; }
+    #panel-dash-tools, #panel-dash-cache { margin: 0; }
     .panel-title { text-style: bold; color: $accent; }
     #usage-window { padding: 0; }
     #usage-note, #dash-note, #filter-tokens, #hist-head, #resp-head, #plugin-head {
         padding: 0 1; color: $text-muted; height: auto; }
-    #dash-activity { color: $accent; }
-    #dash-activity-axis { color: $text-muted; }
     #usage-table { height: 1fr; min-height: 6; }
     .summary-panels.compact, .dash-row.compact { layout: vertical; }
     /* Stacked one-per-row wastes the width a narrow terminal still has: at
@@ -1792,8 +1785,10 @@ class TrackerApp(WideTableMixin, App):
     .summary-panels.compact .usage-panel,
     .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
     .dash-row { height: auto; margin: 0 0 1 0; }
+    /* The ledger grows with its rows and the box scrolls once the screen is
+       full — a fixed 9 rows silently hid the rest of a long project list. */
     #panel-dash-projects { height: auto; }
-    #dash-projects { height: 9; }
+    #dash-projects { height: auto; }
     /* The drill-down detail: fixed label column, wrapping value column. */
     #call-body { height: 1fr; overflow-y: auto; padding: 0 1; }
     .call-label { width: 18; color: $text-muted; }
@@ -1923,7 +1918,6 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="dash-tok-usage"),
                                     Static(id="dash-tok-input"),
                                     Static(id="dash-tok-output"),
-                                    Static(id="dash-tok-api"),
                                     Static(id="dash-tok-credits"),
                                     Static(id="dash-tok-hit-rate"),
                                     classes="usage-panel", id="panel-dash-tokens",
@@ -1952,29 +1946,6 @@ class TrackerApp(WideTableMixin, App):
                             ),
                             Horizontal(
                                 Vertical(
-                                    Static("Runtime", classes="panel-title"),
-                                    Static(id="dash-rt-completed"),
-                                    Static(id="dash-rt-failed"),
-                                    Static(id="dash-rt-pending"),
-                                    Static(id="dash-rt-avg"),
-                                    Static(id="dash-rt-sessions"),
-                                    Static(id="dash-rt-projects"),
-                                    Static(id="dash-rt-other"),
-                                    Static(id="dash-rt-peak"),
-                                    Static(id="dash-rt-compactions"),
-                                    classes="usage-panel", id="panel-dash-runtime",
-                                ),
-                                Vertical(
-                                    Static("Calls per day", classes="panel-title"),
-                                    Static(id="dash-activity"),
-                                    Static(id="dash-activity-axis"),
-                                    classes="usage-panel",
-                                    id="panel-dash-activity",
-                                ),
-                                classes="dash-row", id="dash-row-3",
-                            ),
-                            Horizontal(
-                                Vertical(
                                     Static("Projects", classes="panel-title"),
                                     Static("", id="colnote-projects",
                                            classes="colnote"),
@@ -1983,7 +1954,7 @@ class TrackerApp(WideTableMixin, App):
                                     classes="usage-panel",
                                     id="panel-dash-projects",
                                 ),
-                                classes="dash-row", id="dash-row-4",
+                                classes="dash-row", id="dash-row-3",
                             ),
                             Static(id="dash-note"),
                             id="dash-box",
@@ -2005,7 +1976,6 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="sum-usage-total"),
                                     Static(id="sum-input"),
                                     Static(id="sum-output"),
-                                    Static(id="sum-total"),
                                     classes="usage-panel", id="panel-tokens",
                                 ),
                                 Vertical(
@@ -2276,10 +2246,8 @@ class TrackerApp(WideTableMixin, App):
             start, end, _ = self._window("dashboard")
         kpi = db.q_usage_kpi(conn, start, end)
         summary = db.q_usage_summary(conn, start, end)
-        act = db.q_usage_activity(conn, start, end)
         models = db.q_usage_model_stats(conn, start, end)
         tools = db.q_tools(conn, limit=self.cfg["top_n"], start_ts=start, end_ts=end)
-        daily = db.q_usage_daily(conn, start, end)
 
         self._put_panel("#dash-sum-requests", "Requests",
                         f"{kpi['requests']:,}")
@@ -2307,8 +2275,6 @@ class TrackerApp(WideTableMixin, App):
                         fmt_tok(summary["input_tokens"], tok_rep))
         self._put_panel("#dash-tok-output", "Output",
                         fmt_tok(summary["output_tokens"], tok_rep))
-        self._put_panel("#dash-tok-api", "API Total",
-                        fmt_tok(summary["total_tokens"], tok_rep))
         self._put_panel("#dash-tok-credits", "Credits",
                         fmt_credit_total(kpi["credits"], kpi["credits_carried"]))
         self._put_panel("#dash-cache-hit", "Cache hit",
@@ -2320,28 +2286,6 @@ class TrackerApp(WideTableMixin, App):
         self._put_panel("#dash-tok-hit-rate", "Cache hit rate",
                         self._hit_rate(summary["cache_hit"], summary["cache_miss"],
                                        summary["cache_write"]))
-
-        self._put_panel("#dash-rt-completed", "Completed",
-                        f"{act['completed'] or 0:,}")
-        self._put_panel("#dash-rt-failed", "Failed",
-                        f"{act['failed'] or 0:,}")
-        self._put_panel("#dash-rt-pending", "Pending",
-                        f"{act['pending'] or 0:,}")
-        # Backgrounded and cancelled calls are neither failures nor pending; the
-        # line keeps the five statuses adding up to the Tool calls KPI.
-        self._put_panel("#dash-rt-other", "Bg / cancel",
-                        f"{act['backgrounded'] or 0:,} / "
-                        f"{act['cancelled'] or 0:,}")
-        self._put_panel("#dash-rt-avg", "Avg tool time", ms(act["avg_ms"]))
-        self._put_panel("#dash-rt-sessions", "Sessions",
-                        f"{act['sessions'] or 0:,}")
-        self._put_panel("#dash-rt-projects", "Projects",
-                        f"{act['projects'] or 0:,}")
-        self._put_panel("#dash-rt-peak", "Peak context",
-                        pct(kpi["peak_context"]))
-        self._put_panel("#dash-rt-compactions", "Compactions",
-                        f"{kpi['compactions']:,} · "
-                        f"{fmt_n(kpi['compacted_tokens'])} ctx dropped")
 
         if not models:
             self.query_one("#dash-models", Static).update(
@@ -2372,7 +2316,6 @@ class TrackerApp(WideTableMixin, App):
                 for i, r in enumerate(live, 1)))
 
         self._render_project_board(conn, start, end)
-        self._render_dashboard_activity(daily, start, end, kpi)
         if not any(kpi.values()) and not (summary["requests"] or 0):
             self.query_one("#dash-note", Static).update(
                 "No data in this window — widen the range above.")
@@ -2399,57 +2342,6 @@ class TrackerApp(WideTableMixin, App):
 
     # Block characters for the per-day sparkline (index 0 = no activity).
     _SPARK = " ▁▂▃▄▅▆▇█"
-
-    def _sparkline(self, values) -> str:
-        peak = max(values) if values else 0
-        if peak <= 0:
-            # A quiet window still draws something: an empty string left a blank
-            # region on the Dashboard, which reads as "widget broken" rather than
-            # "no calls". A dotted baseline says the same thing as the zero-height
-            # bars it replaces, without inventing a bar.
-            return "·" * len(values)
-        out = []
-        for v in values:
-            level = 0 if v <= 0 else min(8, max(1, round(v / peak * 8)))
-            out.append(self._SPARK[level])
-        return "".join(out)
-
-    def _render_dashboard_activity(self, daily, start, end, kpi=None) -> None:
-        """A one-line sparkline of requests per local day across the window.
-
-        ``daily`` only carries days that had calls, so the gaps are filled from
-        the window bounds. For the all-time range the series starts at the first
-        day with data (never from the epoch). The axis also carries the window's
-        credits, which the old version computed and then never printed.
-        """
-        counts = {r["day"]: r["calls"] for r in daily}
-        now = self._now_ms() if end is None else end
-        end_day = datetime.fromtimestamp(now / 1000).date()
-        if start is not None:
-            start_day = datetime.fromtimestamp(start / 1000).date()
-        elif daily:
-            start_day = datetime.strptime(daily[0]["day"], "%Y-%m-%d").date()
-        else:
-            start_day = end_day
-        days, d = [], start_day
-        while d <= end_day:
-            days.append(d)
-            d += timedelta(days=1)
-        series = [counts.get(day.isoformat(), 0) for day in days]
-        self.query_one("#dash-activity", Static).update(self._sparkline(series))
-        # The day list is never empty (a window always contains at least today),
-        # so the branch that matters is "no calls in it", not "no days".
-        credits = ""
-        if kpi is not None:
-            credits = (" · credits "
-                       + fmt_credit_total(kpi["credits"], kpi["credits_carried"]))
-        if any(series):
-            self.query_one("#dash-activity-axis", Static).update(
-                f"{days[0]:%m-%d} → {days[-1]:%m-%d} · "
-                f"peak {max(series):,}/day{credits}")
-        else:
-            self.query_one("#dash-activity-axis", Static).update(
-                f"{days[0]:%m-%d} → {days[-1]:%m-%d} · no activity{credits}")
 
     # --- Usage page --------------------------------------------------------
 
@@ -2485,16 +2377,14 @@ class TrackerApp(WideTableMixin, App):
                         f"{summary['sessions'] or 0:,}")
         self._put_panel("#sum-projects", "Projects",
                         f"{summary['projects'] or 0:,}")
-        # Usage Total = Input + Output + cache hit; a display-only re-add, shown
-        # beside the API total and never instead of it.
+        # Usage Total = Input + Output + cache hit; a display-only re-add, and the
+        # only total this page shows.
         self._put_panel("#sum-usage-total", "Usage Total",
                         fmt_tok(summary["usage_total_tokens"], tok_rep))
         self._put_panel("#sum-input", "Input",
                         fmt_tok(summary["input_tokens"], tok_rep))
         self._put_panel("#sum-output", "Output",
                         fmt_tok(summary["output_tokens"], tok_rep))
-        self._put_panel("#sum-total", "API Total",
-                        fmt_tok(summary["total_tokens"], tok_rep))
         self._put_panel("#sum-cache-hit", "Cache hit",
                         fmt_tok(summary["cache_hit"], tok_rep))
         self._put_panel("#sum-cache-miss", "Cache miss",
@@ -2557,7 +2447,7 @@ class TrackerApp(WideTableMixin, App):
                 fmt_tok(r["usage_total_tokens"], rep),
                 fmt_credits(r["credits"]),
                 fmt_tok(r["input_tokens"], rep),
-                fmt_tok(r["output_tokens"], rep), fmt_tok(r["total_tokens"], rep),
+                fmt_tok(r["output_tokens"], rep),
                 fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
@@ -2758,7 +2648,7 @@ class TrackerApp(WideTableMixin, App):
                 fmt_credit_total(r["credits"], r["credits_carried"]),
                 fmt_n(r["requests"]),
                 fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
-                fmt_tok(r["total_tokens"], rep), fmt_tok(r["cache_read_tokens"], rep),
+                fmt_tok(r["cache_read_tokens"], rep),
                 fmt_tok(r["cache_miss_tokens"], rep),
                 fmt_tok(r["cache_creation_tokens"], rep),
                 self._hit_rate(r["cache_read_tokens"], r["cache_miss_tokens"],

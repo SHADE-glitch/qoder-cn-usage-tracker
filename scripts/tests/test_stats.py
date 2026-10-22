@@ -389,18 +389,19 @@ class StatsReportTest(unittest.TestCase):
         self.assertEqual(len(rows), 1, out)
         self.assertIn("ark-code-latest", rows[0])
         self.assertIn("Volcano ARK", rows[0])
-        # Usage Total leads, then credits; API Total is the narrower sum. The
-        # provider is two words, so the row is checked by content, not position.
+        # Usage Total leads, then credits. The provider is two words, so the row
+        # is checked by content, not position.
         self.assertIn("usage total", out)
-        self.assertIn("190", rows[0])
-        self.assertIn("110", rows[0])
+        self.assertIn("190", rows[0])            # 100 + 10 + 80 (cache hit)
+        self.assertIn("100", rows[0])            # input
+        self.assertIn("10", rows[0])             # output
         self.assertIn("80.0%", rows[0])
         self.assertNotIn("coverage", out.lower())
-        # The footnote explains the two derived totals a reader would otherwise
-        # have to guess at.
+        # One token total: the footnote explains it and the derivation of the
+        # cache columns; there is no second total to explain.
         self.assertIn("usage total = input + output + cache hit", out)
-        self.assertIn("api total   = input + output", out)
         self.assertIn("cache miss is derived", out)
+        self.assertNotIn("api total", out.lower())
 
     def test_the_builtin_sentinel_is_never_printed_as_a_label(self):
         """`models` and `show` carry the same one-column Provider label as the

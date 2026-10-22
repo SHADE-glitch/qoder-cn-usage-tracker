@@ -344,7 +344,6 @@ def cmd_models(conn, args):
             fmt_credit_total(r["credits"], r["credits_carried"]),
             fmt_n(r["requests"]),
             fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
-            fmt_tok(r["total_tokens"], rep),
             fmt_tok(r["cache_read_tokens"], rep),
             fmt_tok(r["cache_miss_tokens"], rep),
             fmt_tok(r["cache_creation_tokens"], rep),
@@ -353,16 +352,15 @@ def cmd_models(conn, args):
             ts(r["last_used"]),
         ])
     print(table(["model", "provider", "usage total", "credits", "requests",
-                 "input", "output", "api total", "cache hit", "cache miss",
+                 "input", "output", "cache hit", "cache miss",
                  "cache write", "hit rate", "last used"], cur,
-                aligns=["<", "<", ">", ">", ">", ">", ">", ">", ">", ">", ">",
+                aligns=["<", "<", ">", ">", ">", ">", ">", ">", ">", ">",
                         ">", "<"]))
     print()
     print("  usage total = input + output + cache hit (display total; input")
     print("                already contains cache hit on this shape)")
-    print("  api total   = input + output · cache miss is derived from input")
-    print("  rank        = usage total, then credits · `—` = the route reported")
-    print("                no token · `-` = no field / no data")
+    print("  cache miss is derived from input · rank = usage total, then credits")
+    print("  `—` = the route reported no token · `-` = no field / no data")
     return 0
 
 
@@ -393,7 +391,7 @@ def cmd_plugins(conn, args):
 _SHOW_LABELS = {
     "avg_ms": "avg", "duration_ms": "duration", "first_used": "first used",
     "last_used": "last used", "is_sidechain": "sidechain", "admin_op": "op",
-    "usage_total_tokens": "usage total", "total_tokens": "api total",
+    "usage_total_tokens": "usage total", "total_tokens": "reported total",
     "cache_read_tokens": "cache hit", "cache_miss_tokens": "cache miss",
     "cache_creation_tokens": "cache write",
     "peak_context": "peak context", "compacted_tokens": "compacted",
