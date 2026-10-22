@@ -538,3 +538,18 @@ Evidence 2026-10-22: the tab-set test pins the three `.dash-row` ids and the abs
 Cost     Failure and pending counts are one keystroke further (the Tools tab), and the
          per-day shape of usage is visible only through window changes.
 Commit   5b7f2f3
+
+### D-025 · 2026-10-22 · fix
+Symptom  Both dashboard lists were fixed-width lines sized for the three-up row at 140
+         columns (models 41 cells, tools 38). One more digit — a credit total past 999, a
+         call count past 99,999 — pushed the tail past the panel, and a wrapped tail reads
+         as another entry in the list.
+Change   Each line takes its label width from the panel's measured width less one reserved
+         column (the pane's scrollbar) and the widths of the fields the data actually needs;
+         a longer number narrows the label instead of wrapping the row.
+Evidence L0 2026-10-22: the dashboard rendered with the picker on All time at 120x45,
+         130x45, 140x45, 150x45 and 160x45, every Static measured against its own width —
+         0 overflows. Suite green (387 tests).
+Cost     At 140 columns the model label is 33 cells (it was 18) and the tool label 34 (it
+         was 16); the numbers keep their exact form, so a wide panel is spent on the name.
+Commit   f8b3078
