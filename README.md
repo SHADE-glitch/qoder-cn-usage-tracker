@@ -90,8 +90,8 @@ category has a Qoder field behind it, qcut has it too. Where it does not, qcut l
 the category out and says why rather than inventing a placeholder — per-request
 duration, HTTP status and money have no Qoder field. Conversely, Qoder facts that
 `cbut` does not have are kept and made first-class: credits beside tokens, the
-`—`/`-` distinction for a route that reports no token, `Usage Total` beside
-`API Total`, and cache read / miss / write. "What does Qoder actually record?" is
+`—`/`-` distinction for a route that reports no token, one **Usage Total** as the
+token total, and cache read / miss / write. "What does Qoder actually record?" is
 the question; matching cbut's screen is not.
 
 ## 🏗️ How it works
@@ -128,14 +128,14 @@ button applies the picked start/end to the active tab only.
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | a Usage panel (requests, credits, sessions, projects, builtin calls, skills, agent runs, MCP, plugins), a Tokens panel (usage total · input · output · API total · credits · cache hit rate), a Cache panel, runtime (completed / failed / pending / average tool time / sessions / projects / bg-cancel / peak context / compaction tax), a per-day calls sparkline, Top models, Top tools, and the **project board** (requests · usage total · credits · peak ctx · last used) — all for the Dashboard's own window |
+| 🧭 | **Dashboard** | a Usage panel (requests, credits, sessions, projects, builtin calls, skills, agent runs, MCP, plugins), a Tokens panel (usage total · input · output · credits · cache hit rate), a Cache panel, Top models, Top tools, and the **project board** (requests · usage total · credits · peak ctx · last used) — all for the Dashboard's own window. The runtime row and the per-day calls sparkline were removed: the failure split lives on the Tools tab and peak context / compactions are one Enter away on the project screen. The board grows with its rows and the pane scrolls, so a long project list is never cut |
 | 🧰 | **Tools** | builtin tool calls by name: calls · ok · fail · pending · average duration · last used |
 | 🎯 | **Skills** | skill invocations by name: calls · ok · fail · owning plugin · last used |
 | 🤖 | **Agents** | subagent types: **runs · ok · fail · linked requests · usage total · credits · peak context · last used**; a run with no linked response reads `0` requests and `-` tokens |
 | 🧩 | **Plugins** | every plugin — installed **and** ever used — with source, version, attributed uses and installed resources; all-time |
 | 🔌 | **MCP** | MCP targets: server · tool · calls · ok · fail · average duration · last used; an admin op shows `(admin)` |
-| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **usage total · credits · requests**, input / output / API total, cache hit / miss / write, cache hit rate, last used |
-| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **usage total · credits** · input · output · API total · cache hit / miss / write · cache hit rate. <kbd>Enter</kbd> opens that exact call |
+| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **usage total · credits · requests**, input / output, cache hit / miss / write, cache hit rate, last used |
+| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **usage total · credits** · input · output · cache hit / miss / write · cache hit rate. <kbd>Enter</kbd> opens that exact call |
 
 `Provider` is one column, not a family plus a name: Qoder's own route reads
 `Built-in`, and a BYOK/third-party call shows the channel that served it.
@@ -227,9 +227,10 @@ one measure. qcut stores exactly what was reported and draws the difference:
 - `-` means the value is absent, or there is nothing in this window.
 
 A mixed table can therefore hold both kinds of row at once: the measured cells stay
-numerals and the route-level zeros become `—` beside them. Usage Total is a display
-re-add of the cache hit (already part of Input), shown next to API Total rather than
-instead of it.
+numerals and the route-level zeros become `—` beside them. **One token total: Usage
+Total** is a display re-add of the cache hit (already part of Input), and it is the only
+total any panel prints — the earlier `API Total` column is gone, because two unlabelled
+totals on one screen invited the reader to pick the wrong one.
 
 **No estimation, no conversion:** tokens are never derived from credits or from a
 context ratio, and credits are never derived from tokens. History can be reviewed but
@@ -237,10 +238,12 @@ not repaired.
 
 Two further notes on the arithmetic:
 
-- **API total = input + output.** On Qoder's shape `input_tokens` is the *whole*
-  prompt and `cache_read_tokens` is a **subset** of it — adding cache read on top
-  would push a single request past the model's 400k window, which is how the
-  reading was checked.
+- **On Qoder's shape `input_tokens` is the *whole* prompt** and
+  `cache_read_tokens` is a **subset** of it — adding cache read on top would push a
+  single request past the model's 400k window, which is how the reading was checked.
+  Usage Total is `input + output + cache hit` by the family's definition; the
+  provider's own total is not a rival number shown beside it (the earlier
+  `API total = input + output` column was removed with it).
 - **Cache hit rate = cache read ÷ (read + miss + write)**, the cacheable input that
   the three parts partition. `-` when there is no cache data, never a fabricated `0%`.
 

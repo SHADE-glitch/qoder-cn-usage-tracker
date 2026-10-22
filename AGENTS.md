@@ -37,8 +37,9 @@ the same order, per-tab calendar-day windows, name-keyed unions, two-level drill
 What is **not** copied is any category Qoder CN CLI does not record: per-request duration,
 HTTP status and money have no Qoder field, so they stay absent and the note says why.
 The Qoder-specific additions — credits beside tokens, the `—`/`-` distinction for a
-route that reports no token, `Usage Total` beside `API Total`, cache read / miss /
-write — are this project's own and are first-class, not deviations to be sanded off
+route that reports no token, one **Usage Total** as the token total (the panels print no
+other), cache read / miss / write — are this project's own and are first-class, not
+deviations to be sanded off
 for parity. When the two disagree, the
 source of truth is what Qoder's transcripts contain, never cbut's screen. The READMEs
 carry the user-facing version under "Relationship to cbut".
@@ -477,9 +478,10 @@ Re-measure before restating any of these; the commands are in
 - A tool result with no `toolUseResult.kind` is 19,816 of 46,011 results on this
   machine. Treating those as "pending" reported finished work as unfinished.
 - `input_tokens` is the whole prompt and `cache_read_tokens` a subset of it: the
-  largest single request here is 357,240 in / 358,703 API total, but re-adding the
-  cache read makes it 715,055 — past the model's 400k window. That is why
-  `Usage Total` is shown *beside* `API Total` and never instead of it.
+  largest single request here reads 357,240 in / 358,703 on the provider's own
+  total, but re-adding the cache read makes it 715,055 — past the model's 400k
+  window. Usage Total re-adds the hit by the family's definition; the provider's
+  total is stored but is not printed as a second panel total beside it.
 - 444 of 489 transcript files are `agent-a<Type>-<hash>.jsonl` subagent
   transcripts carrying the parent session id.
 - On the legacy index most hosted calls predate the token flag, so their token

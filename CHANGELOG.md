@@ -489,3 +489,52 @@ Evidence 2026-10-19: every table block in README.md now has a uniform pipe count
 Cost     None; no test or CI file was touched.
 
 Commit   bc5f4cc
+
+### D-022 · 2026-10-22 · fix
+Symptom  The footer never listed the key that opens a row: Textual binds `enter` on
+         `DataTable` with `show=False`, so the focused table's own binding won and hid every
+         other `enter`; an app-level binding could not fix it.
+Change   A two-line `Table(DataTable)` subclass re-declares the same `select_cursor` action
+         under a visible name, used only by the tables whose rows open something (the
+         entity tabs and the drill-down screens). `dash-projects` and `usage-table` carry
+         no row key and stay plain, so the footer never advertises a dead key.
+Evidence 2026-10-22: the footer test reads `active_bindings` per tab and finds
+         `("enter", "Open")` absent where no row opens, present where one does. Suite green.
+Cost     A table is now `Table` or `DataTable` by hand and the wrong choice is silent both
+         ways; the registration guard counts both classes but does not check the choice.
+Commit   20af79e
+
+### D-023 · 2026-10-22 · taste
+Symptom  Two unlabelled token totals on one screen. The Tokens and Usage tables, the
+         project board, the agent history, the headless `models` table and the model
+         summary line each carried an "API Total" beside the Usage Total.
+Change   One token total everywhere: the API Total column is gone from all of them; the
+         stored per-row total survives on the single-call screen renamed "reported total".
+         `SUMMARY_KEYS["model"]` drops the second total, and the CLI footnote explains
+         Usage Total and the derived cache columns instead of two competing totals.
+Evidence 2026-10-22: `test_the_models_table_explains_its_two_derived_columns` renamed and
+         now asserts `api total` is absent from the CLI output; the TUI suites were green
+         the same day (387 tests).
+Cost     A reader who wants the provider's own per-row figure opens the single-call
+         screen, where it is labelled by provenance. The dashboard's Usage panel and the
+         CLI now share one number, so they can no longer disagree quietly.
+Commit   5b7f2f3
+
+### D-024 · 2026-10-22 · taste
+Symptom  The dashboard's second row repeated figures other tabs compute from the same
+         rows (Runtime: completed/failed/pending, average tool time, peak context,
+         compaction tax) and a calls-per-day sparkline that duplicated the Usage page's
+         window; the project board sat in a fixed-height panel where a tenth project was
+         silently invisible.
+Change   The Runtime row and the sparkline are removed; the dashboard re-flows into three
+         rows (headline counts · leaderboards · project board). Peak context and
+         compactions stay readable one Enter away on the project screen, which is where a
+         per-project fact belongs. The board's panel is `height: auto` inside the
+         scrolling `#dash-box`, so it takes the height its rows need.
+Evidence 2026-10-22: the tab-set test pins the three `.dash-row` ids and the absence of
+         `#dash-rt-*`; `test_the_project_screen_and_tokens_note_surface_the_new_ledgers`
+         reads compactions/peak off the project screen and asserts the dashboard ids are
+         gone. Suite green (387 tests).
+Cost     Failure and pending counts are one keystroke further (the Tools tab), and the
+         per-day shape of usage is visible only through window changes.
+Commit   5b7f2f3
