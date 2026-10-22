@@ -1740,6 +1740,24 @@ class FilterInput(Input):
 # --- the app ---------------------------------------------------------------
 
 
+class DashBox(Vertical):
+    """The Dashboard's scrolling stack.
+
+    It re-fits the project ledger when its own height changes. The app's
+    resize event arrives before this box is laid out at the new height, so a
+    fit measured there would use the previous window's spare.
+    """
+
+    def on_resize(self, event) -> None:  # textual.events.Resize
+        try:
+            app = self.app
+        except Exception:  # not mounted yet
+            return
+        fit = getattr(app, "_fit_dashboard", None)
+        if fit is not None:
+            app.call_after_refresh(fit)
+
+
 class TrackerApp(WideTableMixin, App):
     """The eight-tab Qoder CN CLI usage UI."""
 
@@ -1901,7 +1919,7 @@ class TrackerApp(WideTableMixin, App):
             for tid, title in TABS:
                 with TabPane(title, id=tid):
                     if tid == "dashboard":
-                        yield Vertical(
+                        yield DashBox(
                             Horizontal(
                                 Vertical(
                                     Static("Usage", classes="panel-title"),
@@ -2840,7 +2858,8 @@ class TrackerApp(WideTableMixin, App):
         # event.size carries the NEW size (self.size still lags here).
         self._apply_responsive_layout(event.size.width)
         self._plan_wide_tables(event.size.width)
-        self.call_after_refresh(self._fit_dashboard)
+        # The ledger is re-fitted by DashBox.on_resize: this box is not laid out
+        # at its new height yet, so a fit measured here would use the old one.
 
     # --- events ------------------------------------------------------------
 
