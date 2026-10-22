@@ -553,3 +553,19 @@ Evidence L0 2026-10-22: the dashboard rendered with the picker on All time at 12
 Cost     At 140 columns the model label is 33 cells (it was 18) and the tool label 34 (it
          was 16); the numbers keep their exact form, so a wide panel is spent on the name.
 Commit   f8b3078
+
+### D-026 · 2026-10-22 · fix
+Symptom  The dashboard legend was one 168-cell sentence rendered at `height: auto`, so on a
+         120- or 160-column terminal it wrapped onto a second row and pushed the project
+         board — and the table under it — down by one line.
+Change   The sentence is now 95 cells and carries `height: 1` with `nowrap` + `ellipsis`,
+         so a narrower terminal clips it on one row instead of growing. A resize case
+         renders the line at 120 and 80 columns and asserts one row, no overflow, and no
+         ellipsis at 120.
+Evidence L0 2026-10-22: `#dash-note` measured at 70/80/100/120/140/160/200 columns on the
+         real database — height 1 everywhere, 0 overflows, ellipsis only below 97 columns.
+         Suite green (388 tests).
+Cost     The legend lost its prose: "Built-in = Qoder, else BYOK · `—` = no token · `-` =
+         no data · Enter = open a project". The drill-down hint is a gesture, not a
+         sentence, and the two dashes keep their meaning.
+Commit   e89ac3a
