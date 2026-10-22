@@ -505,8 +505,8 @@ followed in the same round, not the other way round). These facts must stay true
 - **Freeze / archive** — say so on the profile; never leave a stale "maintained".
 - **Public ↔ private** — a repo that goes private again must be **delisted**.
 
-**The GitHub About description is under the same rule.** It is a promise with 100 characters, and it
-must describe *this* repository, not the family. Copying a sibling's About verbatim gets one thing
+**The GitHub About description is under the same rule.** It is a promise with at most 350
+characters, and it must describe *this* repository, not the family. Copying a sibling's About verbatim gets one thing
 wrong here, and misses one:
 
 - **The product name is part of the promise.** "CodeBuddy Code" in a Qoder repository's About is a
