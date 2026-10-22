@@ -4,8 +4,9 @@
     python3 scripts/qcut-tui.py
 
 The app is a *reader* of the index built by ``qcut sync`` — except that it also
-writes: ``on_mount`` runs ``db.migrate()`` and the auto-sync worker runs the same
-indexer the CLI does. Anything that assumes the TUI is read-only is wrong.
+writes: ``on_mount`` runs ``db.migrate()`` and the sync worker it starts on
+launch (or on ``r``) runs the same indexer the CLI does. Anything that assumes
+the TUI is read-only is wrong.
 
 Tabs: Dashboard · Tools · Skills · Agents · Plugins · MCP · Tokens · Usage.
 Each tab keeps its own window; the Plugins tab has none (an install fact is
@@ -227,6 +228,44 @@ DEFAULT_RANGES = {
     "plugins": None, "mcp": "7d", "tokens": "1d", "usage": "1d",
 }
 
+# Per-tab sort orders: (label, row key, descending). Mode 0 is the query's own
+# order; `s` then cycles these and wraps back to it. Named per tab because the
+# same idea is a different column (`calls` / `runs` / `uses` / `requests`).
+SORT_FIELDS = {
+    "tools": (("calls", "calls", True), ("recent", "last_used", True),
+              ("name", "tool_name", False)),
+    "skills": (("calls", "calls", True), ("recent", "last_used", True),
+               ("name", "skill", False)),
+    "agents": (("runs", "runs", True), ("requests", "requests", True),
+               ("tokens", "usage_total_tokens", True),
+               ("credits", "credits", True),
+               ("recent", "last_used", True), ("name", "agent_type", False)),
+    "plugins": (("uses", "uses", True), ("recent", "last_used", True),
+                ("name", "plugin", False)),
+    "mcp": (("calls", "calls", True), ("recent", "last_used", True),
+            ("server", "server", False)),
+    "tokens": (("tokens", "usage_total_tokens", True),
+               ("requests", "requests", True), ("credits", "credits", True),
+               ("recent", "last_used", True), ("name", "model", False)),
+}
+# Usage is ordered in SQL — the list is capped at `log_limit` before Python
+# sees it, so a client-side sort could only rank the page. Its first entry is
+# therefore mode 0 rather than a separate "tab order".
+USAGE_SORT_FIELDS = (("time", "ts", True),
+                     ("tokens", "usage_total_tokens", True),
+                     ("credits", "credits", True), ("model", "model", False))
+# The one tab shape without a filterable table: its panels are aggregates.
+FILTERABLE_TABS = ("tools", "skills", "agents", "plugins", "mcp", "tokens",
+                   "usage")
+# `a` widens the installed ∪ ever-used tabs; the others have no unused half.
+SHOW_ALL_TABS = ("tools", "skills", "agents", "mcp")
+
+# Hosted Qoder calls report credits either way; the token numbers only exist
+# when the CLI process itself started with this flag. The note says it in the
+# two places a reader looks for tokens instead of leaving `—` unexplained.
+TOKEN_CAPTURE_HINT = ("token capture off — set QODERCN_EXPOSE_TOKEN_USAGE=1 "
+                      "before starting Qoder")
+
 
 # Column sets. The Usage page is cc-switch's request list with Qoder's fields:
 # time · model · provider · usage total · input · output · API total · cache
@@ -239,17 +278,17 @@ DEFAULT_RANGES = {
 # Tokens tab use (then credits), so the request log presents the same hierarchy.
 USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Credits",
                  "Input", "Output", "API Total", "Cache hit", "Cache miss",
-                 "Cache write", "Hit rate")
+                 "Cache write", "Cache hit rate")
 TOKENS_COLUMNS = ("Model", "Provider", "Usage Total", "Credits", "Requests",
                   "Input", "Output", "API Total", "Cache hit", "Cache miss",
-                  "Cache write", "Hit rate", "Last used")
+                  "Cache write", "Cache hit rate", "Last used")
 
 TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "pending", "avg", "last used")
 SKILLS_COLUMNS = ("skill", "calls", "ok", "fail", "plugin", "last used")
 # A run is one `Agent` tool call. `requests`/tokens/credits are the responses
 # that run's own `parent_tool_use_id` links to it; a run whose sidechain file was
 # never indexed keeps 0 requests and no token sum rather than a guess.
-AGENTS_COLUMNS = ("agent type", "runs", "ok", "fail", "requests",
+AGENTS_COLUMNS = ("agent", "runs", "ok", "fail", "requests",
                   "usage total", "credits", "peak ctx", "last used")
 PLUGINS_COLUMNS = ("plugin", "source", "version", "uses", "skills", "agents",
                    "cmds", "last used")
@@ -273,7 +312,7 @@ HISTORY_COLUMNS = {
     "tool": ("when", "tool", "category", "status", "duration", "project",
              "session"),
     "skill": ("when", "skill", "status", "duration", "project", "session"),
-    "agent": ("when", "agent type", "status", "duration", "requests",
+    "agent": ("when", "agent", "status", "duration", "requests",
               "usage total", "input", "output", "api total", "cache hit",
               "cache write", "credits", "peak ctx", "project", "session"),
     "model": ("when", "model", "provider", "usage total", "credits", "input",
@@ -470,12 +509,12 @@ class TopBar(Horizontal):
     TopBar > #topbar-title { width: 1fr; padding: 0 1; content-align: left middle;
                              text-wrap: nowrap; text-overflow: ellipsis; }
     TopBar > #date-range { width: auto; min-width: 0; height: 1; border: none;
-                           padding: 0 1; background: $panel;
-                           color: $foreground; }
+                           padding: 0 1; background: $panel; color: $accent;
+                           text-style: bold; }
     TopBar > #date-range:hover { background: $boost; }
     TopBar > #range { width: 30; }
     TopBar > #range SelectCurrent { border: none; padding: 0 1;
-                                    background: $panel; }
+                                    background: $panel; color: $accent; }
     """
 
     def __init__(self, title: str, *, with_range: bool = False,
@@ -488,25 +527,25 @@ class TopBar(Horizontal):
     def compose(self) -> ComposeResult:
         yield Static(self._title, id="topbar-title")
         if self._with_range:
-            # A compact 📅 control showing the active tab's window; pressing it
-            # opens the date picker (the same thing as choosing "Custom…").
-            yield Button("📅", id="date-range")
+            # Two controls, two jobs: the Select picks a fixed preset, and the
+            # button opens the calendar for a custom span. The button offers
+            # "Custom…" while a preset is active and names the span once a
+            # custom window is in force.
+            yield Button("📅 Custom…", id="date-range")
             yield Select(RANGE_OPTIONS, value=self._range_value,
                          allow_blank=False, id="range")
 
-    def set_range_label(self, text: str) -> None:
-        """Show or hide the 📅 control; the Select already prints the preset.
-
-        The span is a tooltip instead of a second label: "Today  Today" beside
-        each other was the visible result of printing it twice.
-        """
+    def set_range_label(self, text: str, custom: bool = False) -> None:
+        """Name the custom span, or hide the control on a tab with no window."""
         try:
             btn = self.query_one("#date-range", Button)
         except Exception:
             return
-        btn.label = "📅"
+        btn.label = f"📅 {text} ▾" if custom and text else "📅 Custom…"
         btn.tooltip = text or None
         btn.display = bool(text)
+        # A Button does not re-lay-out when its label grows, so the control
+        # kept the width it was built with until the next full relayout.
         btn.refresh(layout=True)
 
 
@@ -1013,7 +1052,7 @@ class WideTableMixin:
 
     A table never shows a half column: ``_fill_wide`` keeps the longest *prefix*
     of its columns that fits and names the dropped ones on the note line above
-    it. A rule that covers two of the nine tables is not a rule, so the
+    it. A rule that covers two of the thirteen tables is not a rule, so the
     mechanism lives here and each host declares its own ``WIDE_TABLES``.
     ``_wide_rows`` is created by each host's ``__init__`` — it must not be a
     class attribute, or two open screens would share one row cache.
@@ -1196,7 +1235,7 @@ class HistoryScreen(WideTableMixin, Screen):
         return self.app.name_cap
 
     def compose(self) -> ComposeResult:
-        yield TopBar(f"{self.kind}: {self.heading}")
+        yield TopBar(f"{self.kind} · {self.heading}")
         yield Static(id="hist-head")
         yield Static("", id="colnote-hist", classes="colnote")
         yield DataTable(id="hist-table", zebra_stripes=True)
@@ -1336,7 +1375,7 @@ class ProjectScreen(WideTableMixin, Screen):
         return self.app.name_cap
 
     def compose(self) -> ComposeResult:
-        yield TopBar(f"project: {self.heading}")
+        yield TopBar(f"project · {self.heading}")
         yield Static(id="project-head")
         yield Static("", id="colnote-project", classes="colnote")
         yield DataTable(id="project-table", zebra_stripes=True)
@@ -1417,7 +1456,7 @@ class RequestsScreen(WideTableMixin, Screen):
         return self.app.name_cap
 
     def compose(self) -> ComposeResult:
-        yield TopBar(f"requests: {self.heading}")
+        yield TopBar(f"requests · {self.heading}")
         yield Static(id="req-head")
         yield Static("", id="colnote-req", classes="colnote")
         yield DataTable(id="req-table", zebra_stripes=True)
@@ -1517,7 +1556,7 @@ class ModelResponsesScreen(WideTableMixin, Screen):
         return f"{self.model} · {db.provider_label(self.provider)}"
 
     def compose(self) -> ComposeResult:
-        yield TopBar(f"model: {self.heading}")
+        yield TopBar(f"model · {self.heading}")
         yield Static(id="resp-head")
         yield Static("", id="colnote-resp", classes="colnote")
         yield DataTable(id="resp-table", zebra_stripes=True)
@@ -1606,7 +1645,7 @@ class PluginScreen(WideTableMixin, Screen):
         return self.app.name_cap
 
     def compose(self) -> ComposeResult:
-        yield TopBar(f"plugin: {self.plugin}")
+        yield TopBar(f"plugin · {self.plugin}")
         yield Static(id="plugin-head")
         yield Static("", id="colnote-plugin", classes="colnote")
         yield DataTable(id="plugin-table", zebra_stripes=True)
@@ -1674,6 +1713,22 @@ class CallScreen(WideTableMixin, Screen):
             for label, value in _call_detail_rows(row))
 
 
+class FilterInput(Input):
+    """The one-line filter for the active tab.
+
+    Typing filters live; Enter hands the keys back to the table but keeps the
+    bar visible, and Esc clears the filter and hides the bar. Its own binding
+    runs before the app's, so a printable key — `a` and `s` included — inserts
+    into the field instead of reaching the tab's shortcut.
+    """
+
+    BINDINGS = [Binding("escape", "close_filter", "Clear filter", show=False)]
+
+    def action_close_filter(self) -> None:
+        # Widget-level bindings resolve on the widget, so forward to the app.
+        self.app.action_close_filter()
+
+
 # --- the app ---------------------------------------------------------------
 
 
@@ -1691,6 +1746,9 @@ class TrackerApp(WideTableMixin, App):
        count, the schema version and the database path behind the footer. In
        normal flow the bar takes the row directly above the footer. */
     #status { height: 1; color: $text-muted; padding: 0 1; }
+    /* The active tab's filter: one row while it is in use, gone otherwise.
+       Hiding is done in Python (widget.display), which outranks CSS. */
+    #filter-input { display: none; height: 1; border: none; padding: 0 1; }
     /* Summary pages (Dashboard + Usage). Both share .usage-panel and
        .panel-title. The Usage page has one .summary-panels row (height capped,
        scrolling internally so its table below keeps its rows). The Dashboard is
@@ -1701,10 +1759,10 @@ class TrackerApp(WideTableMixin, App):
     .summary-panels { height: auto; max-height: 40%; overflow-y: auto; }
     .usage-panel { border: round $primary; padding: 0 1; margin: 0 1 0 0;
                    width: 1fr; height: auto; }
-    #panel-dash-tools, #panel-dash-commands, #panel-dash-activity { margin: 0; }
+    #panel-dash-tools, #panel-dash-cache, #panel-dash-activity { margin: 0; }
     .panel-title { text-style: bold; color: $accent; }
     #usage-window { padding: 0; }
-    #usage-note, #dash-note, #tokens-note, #hist-head, #resp-head, #plugin-head {
+    #usage-note, #dash-note, #filter-tokens, #hist-head, #resp-head, #plugin-head {
         padding: 0 1; color: $text-muted; height: auto; }
     #dash-activity { color: $accent; }
     #dash-activity-axis { color: $text-muted; }
@@ -1733,14 +1791,24 @@ class TrackerApp(WideTableMixin, App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Sync now"),
-        Binding("s", "toggle_auto_sync", "Auto sync"),
-        Binding("a", "toggle_show_all", "Show all"),
+        Binding("s", "cycle_sort", "Sort"),
+        Binding("a", "toggle_show_all", "All rows"),
+        Binding("slash", "open_filter", "Filter"),
+        Binding("d", "date_range", "Date"),
+        Binding("escape", "close_filter", "Clear filter", show=False),
         Binding("tab", "next_tab", "Next tab", priority=True),
         Binding("shift+tab", "previous_tab", "Prev tab", priority=True),
     ]
-    TITLE = "qcut — Qoder CN CLI usage"
+    TITLE = "Qoder CN CLI usage tracker"
     # No built-in Header means no ctrl+p palette; disable it outright too.
     ENABLE_COMMAND_PALETTE = False
+    # Every shortcut this app owns. A pushed detail screen disables these so
+    # its own Back binding (q/escape) and row actions stay the only keys —
+    # otherwise `s` would re-sort a page that has no sort.
+    APP_SHORTCUT_ACTIONS = frozenset({
+        "quit", "refresh", "cycle_sort", "toggle_show_all", "open_filter",
+        "close_filter", "date_range", "next_tab", "previous_tab",
+    })
 
     # Pane ids in display order, for wrap-around tab cycling.
     TAB_IDS = [tid for tid, _ in TABS]
@@ -1789,7 +1857,6 @@ class TrackerApp(WideTableMixin, App):
         self._sync_note = ""
         self._query_note = ""
         self._usage_ready = False
-        self._auto_sync = True
         self._syncing = False
         self._sync_running = False
         self._sync_pending = False
@@ -1797,8 +1864,15 @@ class TrackerApp(WideTableMixin, App):
         # to the installed ∪ ever-used set, matching how Tokens never lists an
         # unused model.
         self.show_all = False
-        self._last_sync = None
-        self._last_refresh = None
+        # Per tab sort mode: 0 is the query's own order, then the tab's
+        # declared fields. Kept per tab so one page never reorders another.
+        self._sort_mode = {}
+        # Per tab live filter text; applied to the rendered cells so a category
+        # or a state narrows the page as well as a name.
+        self._tab_filters = {}
+        # Set while the app writes the shared Input during a tab switch, so a
+        # programmatic value does not count as a user edit.
+        self._loading_filter = False
         self.sync_mod = None
 
     @property
@@ -1810,6 +1884,8 @@ class TrackerApp(WideTableMixin, App):
     def compose(self) -> ComposeResult:
         yield TopBar(self.TITLE, with_range=True,
                      range_value=self.ranges[self.INITIAL_TAB], id="topbar")
+        yield FilterInput(placeholder="filter rows — Enter keeps, Esc clears",
+                          id="filter-input")
         with TabbedContent(initial=self.INITIAL_TAB):
             for tid, title in TABS:
                 with TabPane(title, id=tid):
@@ -1826,7 +1902,6 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="dash-kpi-skills"),
                                     Static(id="dash-kpi-agents"),
                                     Static(id="dash-kpi-mcp"),
-                                    Static(id="dash-kpi-commands"),
                                     Static(id="dash-kpi-plugins"),
                                     classes="usage-panel", id="panel-dash-kpi",
                                 ),
@@ -1836,11 +1911,16 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="dash-tok-input"),
                                     Static(id="dash-tok-output"),
                                     Static(id="dash-tok-api"),
+                                    Static(id="dash-tok-credits"),
+                                    Static(id="dash-tok-hit-rate"),
+                                    classes="usage-panel", id="panel-dash-tokens",
+                                ),
+                                Vertical(
+                                    Static("Cache", classes="panel-title"),
                                     Static(id="dash-cache-hit"),
                                     Static(id="dash-cache-miss"),
                                     Static(id="dash-cache-write"),
-                                    Static(id="dash-tok-hit-rate"),
-                                    classes="usage-panel", id="panel-dash-tokens",
+                                    classes="usage-panel", id="panel-dash-cache",
                                 ),
                                 classes="dash-row", id="dash-row-1",
                             ),
@@ -1855,12 +1935,6 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="dash-tools"),
                                     classes="usage-panel", id="panel-dash-tools",
                                 ),
-                                Vertical(
-                                    Static("Top commands", classes="panel-title"),
-                                    Static(id="dash-commands"),
-                                    classes="usage-panel",
-                                    id="panel-dash-commands",
-                                ),
                                 classes="dash-row", id="dash-row-2",
                             ),
                             Horizontal(
@@ -1869,8 +1943,10 @@ class TrackerApp(WideTableMixin, App):
                                     Static(id="dash-rt-completed"),
                                     Static(id="dash-rt-failed"),
                                     Static(id="dash-rt-pending"),
-                                    Static(id="dash-rt-other"),
                                     Static(id="dash-rt-avg"),
+                                    Static(id="dash-rt-sessions"),
+                                    Static(id="dash-rt-projects"),
+                                    Static(id="dash-rt-other"),
                                     Static(id="dash-rt-peak"),
                                     Static(id="dash-rt-compactions"),
                                     classes="usage-panel", id="panel-dash-runtime",
@@ -1944,7 +2020,7 @@ class TrackerApp(WideTableMixin, App):
                             id="usage-box",
                         )
                     elif tid == "tokens":
-                        yield Static("", id="tokens-note")
+                        yield Static("", id="filter-tokens", classes="filternote")
                         yield Static("", id="colnote-tokens", classes="colnote")
                         yield DataTable(id="tokens-table", zebra_stripes=True)
                     else:
@@ -1971,16 +2047,20 @@ class TrackerApp(WideTableMixin, App):
         note = db.migrate(self.db_path)
         self._schema_note = "" if note in ("current", "migrated", "created") else note
         self._usage_ready = True
-        # Auto sync (incremental, ~30s) + UI refresh (~5s). Both are timers, not
-        # subprocesses; the sync runs in a worker thread (see _do_sync).
-        self.set_interval(self.cfg["sync_secs"], self._auto_sync_tick)
-        self.set_interval(self.cfg["refresh_secs"], self._auto_refresh_tick)
+        # Explicitly hidden and unfocusable before the first focus pass: a
+        # CSS-hidden Input still receives focus, and then every printable
+        # shortcut is typed into a field the user cannot see.
+        inp = self.query_one("#filter-input", Input)
+        inp.display = False
+        inp.can_focus = False
         self.refresh_data()
-        # The timer alone left a fresh install looking empty for up to
-        # sync_secs seconds. Opening the TUI is itself a request for current
-        # data, so the first pass starts now rather than on the first tick.
-        if self._auto_sync:
-            self._request_sync()
+        # After the initial activation has settled, put the keyboard on the
+        # table rather than the range Select. Deferred because focusing during
+        # mount races that activation and can bounce the active tab back.
+        self.call_after_refresh(self._focus_active_table)
+        # One incremental sync on launch, then the screen stays still. New rows
+        # arrive only through `r` or by reopening the TUI.
+        self._request_sync()
 
     # --- tab cycling (uses the real TabbedContent.active API) --------------
 
@@ -2057,11 +2137,12 @@ class TrackerApp(WideTableMixin, App):
         target = CUSTOM_RANGE if isinstance(value, db.CustomWindow) else value
         if sel.value != target:
             sel.value = target
-        self._set_date_label(db.window_label(value))
+        self._set_date_label(db.window_label(value),
+                             isinstance(value, db.CustomWindow))
 
-    def _set_date_label(self, text: str) -> None:
+    def _set_date_label(self, text: str, custom: bool = False) -> None:
         try:
-            self.query_one("#topbar", TopBar).set_range_label(text)
+            self.query_one("#topbar", TopBar).set_range_label(text, custom=custom)
         except Exception:
             pass
 
@@ -2103,8 +2184,6 @@ class TrackerApp(WideTableMixin, App):
                   f"{counts['commands']:,} cmd · "
                   f"unclaimed {fmt_n(counts['unparsed_records'])} · "
                   f"last {ts(counts['last_ts'])}")
-        if not self._auto_sync:
-            status += " · auto-sync OFF"
         if self._syncing:
             status += " · syncing"
         if self._schema_note:
@@ -2132,9 +2211,9 @@ class TrackerApp(WideTableMixin, App):
     def refresh_data(self, conn=None) -> None:
         """Re-fill every tab that is currently populated.
 
-        A full refresh (F5-style, after a sync that indexed something) touches
-        each tab, because a new row can land anywhere; the 5s timer only
-        re-queries the visible one.
+        A full refresh (after a sync that indexed something) touches each tab,
+        because a new row can land anywhere; tab switches, filter edits and a
+        sort re-query only the visible one.
         """
         own = conn is None
         self._query_note = ""
@@ -2187,8 +2266,6 @@ class TrackerApp(WideTableMixin, App):
         act = db.q_usage_activity(conn, start, end)
         models = db.q_usage_model_stats(conn, start, end)
         tools = db.q_tools(conn, limit=self.cfg["top_n"], start_ts=start, end_ts=end)
-        commands = db.q_commands(conn, limit=self.cfg["top_n"],
-                                 start_ts=start, end_ts=end)
         daily = db.q_usage_daily(conn, start, end)
 
         self._put_panel("#dash-sum-requests", "Requests",
@@ -2204,8 +2281,6 @@ class TrackerApp(WideTableMixin, App):
         self._put_panel("#dash-kpi-skills", "Skills", f"{kpi['skills']:,}")
         self._put_panel("#dash-kpi-agents", "Agents", f"{kpi['agents']:,}")
         self._put_panel("#dash-kpi-mcp", "MCP", f"{kpi['mcp']:,}")
-        self._put_panel("#dash-kpi-commands", "Commands",
-                        f"{kpi['commands']:,}")
         self._put_panel("#dash-kpi-plugins", "Plugins", f"{kpi['plugins']:,}")
 
         # A window whose calls all failed to report a token sums to zero in every
@@ -2221,13 +2296,15 @@ class TrackerApp(WideTableMixin, App):
                         fmt_tok(summary["output_tokens"], tok_rep))
         self._put_panel("#dash-tok-api", "API Total",
                         fmt_tok(summary["total_tokens"], tok_rep))
+        self._put_panel("#dash-tok-credits", "Credits",
+                        fmt_credit_total(kpi["credits"], kpi["credits_carried"]))
         self._put_panel("#dash-cache-hit", "Cache hit",
                         fmt_tok(summary["cache_hit"], tok_rep))
         self._put_panel("#dash-cache-miss", "Cache miss",
                         fmt_tok(summary["cache_miss"], tok_rep))
         self._put_panel("#dash-cache-write", "Cache write",
                         fmt_tok(summary["cache_write"], tok_rep))
-        self._put_panel("#dash-tok-hit-rate", "Hit rate",
+        self._put_panel("#dash-tok-hit-rate", "Cache hit rate",
                         self._hit_rate(summary["cache_hit"], summary["cache_miss"],
                                        summary["cache_write"]))
 
@@ -2243,6 +2320,10 @@ class TrackerApp(WideTableMixin, App):
                         f"{act['backgrounded'] or 0:,} / "
                         f"{act['cancelled'] or 0:,}")
         self._put_panel("#dash-rt-avg", "Avg tool time", ms(act["avg_ms"]))
+        self._put_panel("#dash-rt-sessions", "Sessions",
+                        f"{act['sessions'] or 0:,}")
+        self._put_panel("#dash-rt-projects", "Projects",
+                        f"{act['projects'] or 0:,}")
         self._put_panel("#dash-rt-peak", "Peak context",
                         pct(kpi["peak_context"]))
         self._put_panel("#dash-rt-compactions", "Compactions",
@@ -2276,15 +2357,6 @@ class TrackerApp(WideTableMixin, App):
                 f"{i}. {clip(r['tool_name'], 16):<16}"
                 f"{count_n(r['calls'], 'call'):>11} · {ms(r['avg_ms'])}"
                 for i, r in enumerate(live, 1)))
-
-        if not commands:
-            self.query_one("#dash-commands", Static).update(
-                "nothing in this window")
-        else:
-            self.query_one("#dash-commands", Static).update("\n".join(
-                f"{i}. /{clip(r['command'].lstrip('/'), 18):<18}"
-                f"{count_n(r['calls'], 'call'):>12}"
-                for i, r in enumerate(commands, 1)))
 
         self._render_project_board(conn, start, end)
         self._render_dashboard_activity(daily, start, end, kpi)
@@ -2416,7 +2488,7 @@ class TrackerApp(WideTableMixin, App):
                         fmt_tok(summary["cache_miss"], tok_rep))
         self._put_panel("#sum-cache-write", "Cache write",
                         fmt_tok(summary["cache_write"], tok_rep))
-        self._put_panel("#sum-hit-rate", "Hit rate",
+        self._put_panel("#sum-hit-rate", "Cache hit rate",
                         self._hit_rate(summary["cache_hit"], summary["cache_miss"],
                                        summary["cache_write"]))
         carried = summary["credits_carried"]
@@ -2437,19 +2509,30 @@ class TrackerApp(WideTableMixin, App):
             return
         if start is None and end is None:
             start, end = self._bounds_for("usage")
-        self._last_refresh = self._now_ms()
         self._render_usage_window()
         summary = db.q_usage_summary(conn, start, end)
         self._render_summary_panels(summary)
-        rows = db.q_usage_request_logs(conn, start, end,
-                                       limit=self.cfg["log_limit"])
+        query = self._tab_filters.get("usage", "").strip()
+        mode = self._sort_mode.get("usage", 0)
+        sort_label = USAGE_SORT_FIELDS[mode % len(USAGE_SORT_FIELDS)][0]
+        rows = db.q_usage_request_logs(
+            conn, start, end, limit=self.cfg["log_limit"],
+            text=query or None, order_by=sort_label)
         total = summary["requests"] or 0
-        note = ("Newest first · Enter opens a call · `—` = no token reported · "
-                "`-` = no data · Usage Total re-adds cache hit (already inside "
-                "Input) · cache miss derived")
-        if rows and total > len(rows):
-            note += f" · showing latest {fmt_n(len(rows))} of {fmt_n(total)} requests"
-        self.query_one("#usage-note", Static).update(note if rows else "")
+        parts = []
+        if rows:
+            parts.append("Enter opens a call · `—` = no token reported · "
+                         "`-` = no data · Usage Total re-adds cache hit "
+                         "(already inside Input) · cache miss derived")
+            parts.append(f"sort: {sort_label}")
+            if query:
+                parts.append(f'filter "{query}" · {len(rows):,} matches')
+            elif total > len(rows):
+                parts.append(f"showing {fmt_n(len(rows))} of "
+                             f"{fmt_n(total)} requests")
+            if db.q_token_capture_gap(conn, start, end):
+                parts.append(TOKEN_CAPTURE_HINT)
+        self.query_one("#usage-note", Static).update(" · ".join(parts))
         out = []
         for r in rows:
             # Per row, not per window: one list can hold both route kinds, and a
@@ -2472,7 +2555,9 @@ class TrackerApp(WideTableMixin, App):
         # request's full detail instead of a model-wide response list. The key
         # kind is `call` precisely so the app router does not read the message
         # id as a model name.
-        self._fill_wide("usage-table", out, EMPTY_MSG["usage"],
+        empty = (f'No requests match "{query}" in this window' if query
+                 else EMPTY_MSG["usage"])
+        self._fill_wide("usage-table", out, empty,
                         key_index=(0, 1), key_kind="call",
                         key_rows=[["model", r["message_id"]] for r in rows])
 
@@ -2486,99 +2571,175 @@ class TrackerApp(WideTableMixin, App):
         note.update(text)
         note.display = bool(text)
 
-    def _filter_note(self, hidden: int, noun: str = "entry") -> str:
-        if not hidden:
-            return ""
-        if self.show_all:
-            return (f"showing all known {noun}s · press a to hide unused")
-        return (f"{count_n(hidden, noun)} not used in this window · "
-                "press a to show all")
+    def _sort_fields_for(self, pane):
+        if pane == "usage":
+            return USAGE_SORT_FIELDS
+        return SORT_FIELDS.get(pane, ())
+
+    def _sorted_indices(self, rows, fields, mode: int) -> list:
+        """Indices of ``rows`` in the selected order; None-valued last.
+
+        Returns indices rather than rows so the caller can slice the key rows
+        with the same positions.
+        """
+        order = list(range(len(rows)))
+        if not mode or not fields:
+            return order
+        _label, key, descending = fields[(mode - 1) % len(fields)]
+        present = [i for i in order if rows[i][key] is not None]
+        missing = [i for i in order if rows[i][key] is None]
+        present.sort(
+            key=lambda i: (str(rows[i][key]).lower()
+                           if isinstance(rows[i][key], str) else rows[i][key]),
+            reverse=descending)
+        return present + missing
+
+    @staticmethod
+    def _matches(cells, query: str) -> bool:
+        if not query:
+            return True
+        for cell in cells:
+            plain = cell.plain if hasattr(cell, "plain") else cell
+            if query in str(plain).lower():
+                return True
+        return False
+
+    def _sort_label(self, pane) -> str:
+        mode = self._sort_mode.get(pane, 0)
+        if pane == "usage":
+            return USAGE_SORT_FIELDS[mode % len(USAGE_SORT_FIELDS)][0]
+        fields = SORT_FIELDS.get(pane, ())
+        if not mode or not fields:
+            return "tab order"
+        return fields[(mode - 1) % len(fields)][0]
+
+    def _entity_note(self, pane, shown: int, scope: int, total: int,
+                     noun: str, base: str = "") -> str:
+        """The one-line summary above a tab's table.
+
+        Always visible because the active sort is state the page must name; a
+        silent reorder is indistinguishable from data that changed. The filter
+        count is `shown of scope` so a narrowed page never looks like the whole
+        page, and the unused hint is the only place `a` is advertised.
+        """
+        parts = []
+        query = self._tab_filters.get(pane, "").strip()
+        if query:
+            parts.append(f'filter "{query}" · {shown:,} of {scope:,}')
+        else:
+            parts.append(count_n(scope, noun))
+        if pane in SHOW_ALL_TABS:
+            if self.show_all:
+                parts.append("incl. installed-unused")
+            elif scope != total:
+                parts.append(f"{count_n(total - scope, noun)} unused hidden"
+                             " — press a")
+        if base:
+            parts.append(base)
+        parts.append(f"sort: {self._sort_label(pane)}")
+        return " · ".join(parts)
+
+    def _render_entity(self, pane, rows, cells_for, empty, *,
+                       keys_for=None, key_index=0, key_kind=None,
+                       noun="row", base="", used=None) -> None:
+        """Sort, filter, and fill one entity tab from its query rows.
+
+        The filter runs over the rendered cells, so a category or a state
+        narrows the page as well as a name. Keys are sliced with the same
+        indices as the cells: a filtered page must still route each remaining
+        row to its own detail screen.
+        """
+        scope = [r for r in rows if used is None or self.show_all or used(r)]
+        scope_count = len(scope)
+        order = self._sorted_indices(scope, self._sort_fields_for(pane),
+                                     self._sort_mode.get(pane, 0))
+        scope = [scope[i] for i in order]
+        cells = [cells_for(r) for r in scope]
+        keys = [keys_for(r) for r in scope] if keys_for else None
+        query = self._tab_filters.get(pane, "").strip().lower()
+        if query:
+            keep = [i for i, c in enumerate(cells) if self._matches(c, query)]
+            scope = [scope[i] for i in keep]
+            cells = [cells[i] for i in keep]
+            if keys is not None:
+                keys = [keys[i] for i in keep]
+        table_empty = (f'no rows match "{query}" in this tab'
+                       if query and not cells else empty)
+        self._fill_wide(f"{pane}-table", cells, table_empty,
+                        key_index=key_index, key_kind=key_kind, key_rows=keys)
+        self._set_filter_note(pane, self._entity_note(
+            pane, len(scope), scope_count, len(rows), noun, base))
 
     def _fill_tools(self, conn, start=None, end=None) -> None:
         rows = db.q_tools(conn, start_ts=start, end_ts=end)
-        shown = [r for r in rows if self.show_all or r["calls"]]
-        self._set_filter_note(
-            "tools", self._filter_note(len(rows) - sum(1 for r in rows if r["calls"]),
-                                       "tool"))
-        self._fill_wide(
-            "tools-table",
-            [[r["tool_name"], fmt_n(r["calls"]), fmt_n(r["completed"]),
-              fmt_n(r["failed"]), fmt_n(r["pending"]), ms(r["avg_ms"]),
-              ts(r["last_used"])]
-             for r in shown],
-            EMPTY_MSG["tools"], key_index=0, key_kind="tool")
+        self._render_entity(
+            "tools", rows,
+            lambda r: [r["tool_name"], fmt_n(r["calls"]), fmt_n(r["completed"]),
+                       fmt_n(r["failed"]), fmt_n(r["pending"]), ms(r["avg_ms"]),
+                       ts(r["last_used"])],
+            EMPTY_MSG["tools"], key_kind="tool", noun="tool",
+            used=lambda r: r["calls"])
 
     def _fill_skills(self, conn, start=None, end=None) -> None:
         rows = db.q_skills(conn, start_ts=start, end_ts=end)
-        shown = [r for r in rows if self.show_all or r["calls"]]
-        self._set_filter_note(
-            "skills", self._filter_note(len(rows) - sum(1 for r in rows if r["calls"]),
-                                        "skill"))
-        self._fill_wide(
-            "skills-table",
-            [[r["skill"], fmt_n(r["calls"]), fmt_n(r["completed"]),
-              fmt_n(r["failed"]), r["plugin"] or "-", ts(r["last_used"])]
-             for r in shown],
-            EMPTY_MSG["skills"], key_index=0, key_kind="skill")
+        self._render_entity(
+            "skills", rows,
+            lambda r: [r["skill"], fmt_n(r["calls"]), fmt_n(r["completed"]),
+                       fmt_n(r["failed"]), r["plugin"] or "-",
+                       ts(r["last_used"])],
+            EMPTY_MSG["skills"], key_kind="skill", noun="skill",
+            used=lambda r: r["calls"])
 
     def _fill_agents(self, conn, start=None, end=None) -> None:
         rows = db.q_agents(conn, start_ts=start, end_ts=end)
-        shown = [r for r in rows if self.show_all or r["runs"]]
-        self._set_filter_note(
-            "agents", self._filter_note(len(rows) - sum(1 for r in rows if r["runs"]),
-                                        "agent"))
-        self._fill_wide(
-            "agents-table",
-            [[r["agent_type"], fmt_n(r["runs"]), fmt_n(r["completed"]),
-              fmt_n(r["failed"]), fmt_n(r["requests"]),
-              fmt_tok(r["usage_total_tokens"], bool(r["token_covered"])),
-              fmt_credit_total(r["credits"], r["credits_carried"]),
-              pct(r["peak_context"]), ts(r["last_used"])]
-             for r in shown],
-            EMPTY_MSG["agents"], key_index=0, key_kind="agent")
+        self._render_entity(
+            "agents", rows,
+            lambda r: [r["agent_type"], fmt_n(r["runs"]), fmt_n(r["completed"]),
+                       fmt_n(r["failed"]), fmt_n(r["requests"]),
+                       fmt_tok(r["usage_total_tokens"],
+                               bool(r["token_covered"])),
+                       fmt_credit_total(r["credits"], r["credits_carried"]),
+                       pct(r["peak_context"]), ts(r["last_used"])],
+            EMPTY_MSG["agents"], key_kind="agent", noun="agent",
+            used=lambda r: r["runs"])
 
     def _fill_plugins(self, conn, start=None, end=None) -> None:
         # Plugins is the inventory tab and has no window: an installed-but-unused
         # plugin is the answer to "what do I have?", not noise. `uses` is the
         # attributed-call count; resources come from the install manifest.
-        self._set_filter_note(
-            "plugins", "uses = attributed calls · resources = installed skills /"
-                       " agents / commands")
-        self._fill_wide(
-            "plugins-table",
-            [[r["plugin"], r["source"] or "-", r["version"] or "-",
-              fmt_n(r["uses"]), fmt_n(r["skills"]), fmt_n(r["agents"]),
-              fmt_n(r["commands"]), ts(r["last_used"])]
-             for r in db.q_plugins(conn)],
-            EMPTY_MSG["plugins"], key_index=0, key_kind="plugin")
+        self._render_entity(
+            "plugins", db.q_plugins(conn),
+            lambda r: [r["plugin"], r["source"] or "-", r["version"] or "-",
+                       fmt_n(r["uses"]), fmt_n(r["skills"]),
+                       fmt_n(r["agents"]), fmt_n(r["commands"]),
+                       ts(r["last_used"])],
+            EMPTY_MSG["plugins"], key_kind="plugin", noun="plugin",
+            base="uses = attributed calls · resources = installed skills /"
+                 " agents / commands")
 
     def _fill_mcp(self, conn, start=None, end=None) -> None:
         # The key is built from the raw (server, tool) pair, never the rendered
         # cells: an absent half renders as `—`, and a drill-down must receive the
         # empty value it can test, not an em dash it would search for.
         rows = db.q_mcp(conn, start_ts=start, end_ts=end)
-        shown = [r for r in rows if self.show_all or r["calls"]]
-        self._set_filter_note(
-            "mcp", self._filter_note(len(rows) - sum(1 for r in rows if r["calls"]),
-                                     "MCP target"))
-        pairs = [[r["server"] or "", r["tool"] or ""] for r in shown]
-        self._fill_wide(
-            "mcp-table",
-            [[(r["server"] or "(admin)"), (r["tool"] or "—"), fmt_n(r["calls"]),
-              fmt_n(r["completed"]), fmt_n(r["failed"]), ms(r["avg_ms"]),
-              ts(r["last_used"])]
-             for r in shown],
+        self._render_entity(
+            "mcp", rows,
+            lambda r: [(r["server"] or "(admin)"), (r["tool"] or "—"),
+                       fmt_n(r["calls"]), fmt_n(r["completed"]),
+                       fmt_n(r["failed"]), ms(r["avg_ms"]),
+                       ts(r["last_used"])],
             EMPTY_MSG["mcp"], key_index=(0, 1), key_kind="mcp",
-            key_rows=pairs)
+            keys_for=lambda r: [r["server"] or "", r["tool"] or ""],
+            noun="MCP target", used=lambda r: r["calls"])
 
     def _fill_tokens(self, conn, start=None, end=None) -> None:
-        rows = []
-        keys = []
-        for r in db.q_models(conn, start_ts=start, end_ts=end):
+        rows = db.q_models(conn, start_ts=start, end_ts=end)
+
+        def cells(r):
             # `token_covered` only decides whether a literal zero is a
             # measurement or a `—`; it is no longer shown as a percentage.
             rep = bool(r["token_covered"])
-            rows.append([
+            return [
                 r["model"], db.provider_label(r["provider"]),
                 fmt_tok(r["usage_total_tokens"], rep),
                 fmt_credit_total(r["credits"], r["credits_carried"]),
@@ -2589,24 +2750,24 @@ class TrackerApp(WideTableMixin, App):
                 fmt_tok(r["cache_creation_tokens"], rep),
                 self._hit_rate(r["cache_read_tokens"], r["cache_miss_tokens"],
                                r["cache_creation_tokens"]),
-                ts(r["last_used"])])
+                ts(r["last_used"])]
+
+        base = ("Provider: Built-in (Qoder) or the BYOK channel that served"
+                " it · `—` = this route reported no token · `-` = no data ·"
+                " Usage Total re-adds cache hit (already inside Input)") if rows else ""
+        if db.q_token_capture_gap(conn, start, end):
+            base = f"{base} · {TOKEN_CAPTURE_HINT}" if base else TOKEN_CAPTURE_HINT
+        self._render_entity(
+            "tokens", rows, cells, EMPTY_MSG["tokens"],
             # One model name can appear under two providers, so the drill-down
             # must carry the channel too or it widens back to both.
-            keys.append([r["model"], r["provider"] or ""])
-        if rows:
-            self.query_one("#tokens-note", Static).update(
-                "Provider: Built-in (Qoder) or the BYOK channel that served it · "
-                "`—` = this route reported no token · `-` = no data · "
-                "Usage Total re-adds cache hit (already inside Input)")
-        else:
-            self.query_one("#tokens-note", Static).update("")
-        self._fill_wide("tokens-table", rows, EMPTY_MSG["tokens"],
-                        key_index=(0, 1), key_kind="model", key_rows=keys)
+            keys_for=lambda r: [r["model"], r["provider"] or ""],
+            key_index=(0, 1), key_kind="model", noun="model", base=base)
 
     # --- refresh plumbing --------------------------------------------------
 
     def _refresh_active_tab(self, conn=None) -> None:
-        """Refresh only the visible tab (5s timer / tab activation).
+        """Refresh only the visible tab (tab activation / filter / sort).
 
         Hidden tabs are left alone; they are populated when the user opens them
         (see ``on_tabbed_content_tab_activated``).
@@ -2653,24 +2814,6 @@ class TrackerApp(WideTableMixin, App):
         """The old name for a single-tab refresh, kept for callers/tests."""
         self._refresh_active_tab()
 
-    def _auto_refresh_tick(self) -> None:
-        # Only the visible tab is re-queried; hidden tabs refresh when the user
-        # opens them. The is_running guard matters because a timer can fire once
-        # more while the app is shutting down (e.g. run_test's teardown), after
-        # the widgets are gone — query_one then raises NoMatches from inside the
-        # timer and fails the test run.
-        if not self.is_running:
-            return
-        self._refresh_active_tab()
-
-    def _auto_sync_tick(self) -> None:
-        # The same shutdown guard as _auto_refresh_tick: a timer can fire once
-        # more while the app is closing.
-        if not self.is_running:
-            return
-        if self._auto_sync:
-            self._request_sync()
-
     def _request_sync(self) -> None:
         # Guard against concurrent syncs: if one is running, mark a pending
         # request and return; the running worker retries on completion.
@@ -2701,7 +2844,6 @@ class TrackerApp(WideTableMixin, App):
             # A later success is the repair of an earlier failure; leaving the
             # old warning on the bar made a transient error permanent.
             self._sync_note = ""
-            self._last_sync = self._now_ms()
             if (stats or {}).get("scanned", 0) > 0:
                 self.refresh_data()          # new rows can touch any tab
             else:
@@ -2747,7 +2889,13 @@ class TrackerApp(WideTableMixin, App):
     # --- events ------------------------------------------------------------
 
     def on_tabbed_content_tab_activated(self, event) -> None:
+        # Each tab keeps its own needle: show it (or hide the row) before the
+        # refresh that applies it.
+        self._sync_filter_bar()
         self._refresh_active_tab()
+        self._focus_active_table()
+        if self._tab_filters.get(self.active_tab, "").strip():
+            self.call_after_refresh(self._anchor_active_table_top)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id != "range":
@@ -2844,29 +2992,173 @@ class TrackerApp(WideTableMixin, App):
 
     # --- actions -----------------------------------------------------------
 
+    def check_action(self, action: str, parameters) -> bool | None:
+        """Hide a key where pressing it could only do nothing.
+
+        A pushed detail screen owns its keys: this app's shortcuts are disabled
+        there, while the screen's own Back binding stays alive. On the main
+        screen, sort/filter/expand disappear where no table or no expansion
+        exists instead of leaving dead keys in the footer.
+        """
+        if len(self.screen_stack) > 1:
+            return action not in self.APP_SHORTCUT_ACTIONS
+        pane = self.active_tab
+        if action in ("next_tab", "previous_tab"):
+            return True
+        if action == "toggle_show_all":
+            return pane in SHOW_ALL_TABS
+        if action == "cycle_sort":
+            return bool(self._sort_fields_for(pane))
+        if action in ("open_filter", "close_filter"):
+            return pane in FILTERABLE_TABS
+        if action == "date_range":
+            return self._range_of(pane) is not None
+        return True
+
     def action_refresh(self) -> None:
         # R = incremental sync + reload DB + refresh the UI (not just a re-render
         # of already-loaded data).
         self._set_status("Syncing…")
         self._request_sync()
 
-    def action_toggle_auto_sync(self) -> None:
-        # S = toggle the automatic sync switch. Distinct from R: it does not
-        # trigger a sync itself.
-        self._auto_sync = not self._auto_sync
-        # The line itself carries the state ("· auto-sync OFF"); a bespoke
-        # message here used to wipe the counts off the bar until an unrelated
-        # refresh happened to put them back.
-        self._set_status(self._status_line())
-        self.notify(f"Auto sync: {'ON' if self._auto_sync else 'OFF'}")
-
     def action_toggle_show_all(self) -> None:
         # A = the entity tabs' union switch. Off is "what this window used",
         # matching Tokens; on is installed ∪ ever used, with zero rows visible.
+        if self.active_tab not in SHOW_ALL_TABS:
+            return
         self.show_all = not self.show_all
         self.notify("Showing all known entities" if self.show_all
                     else "Showing entities used in this window")
         self._refresh_active_tab()
+
+    def action_cycle_sort(self) -> None:
+        pane = self.active_tab
+        fields = self._sort_fields_for(pane)
+        if not fields:
+            return
+        mode = self._sort_mode.get(pane, 0)
+        if pane == "usage":
+            # Usage's first entry is its default order, not "tab order".
+            self._sort_mode[pane] = (mode + 1) % len(fields)
+        else:
+            self._sort_mode[pane] = (mode + 1) % (len(fields) + 1)
+        self._refresh_active_tab()
+
+    def action_date_range(self) -> None:
+        pane = self.active_tab
+        if self._range_of(pane) is None:
+            return
+        self._open_date_range(pane)
+
+    # --- the filter bar ----------------------------------------------------
+
+    def _active_table_id(self):
+        pane = self.active_tab
+        if pane == "dashboard":
+            return "dash-projects"
+        if pane not in FILTERABLE_TABS:
+            return None
+        return "usage-table" if pane == "usage" else f"{pane}-table"
+
+    def _focus_active_table(self) -> None:
+        table_id = self._active_table_id()
+        if table_id is None:
+            return
+        try:
+            self.query_one(f"#{table_id}", DataTable).focus()
+        except Exception:
+            pass
+
+    def _anchor_active_table_top(self) -> None:
+        """Filter edits show the first match instead of pinning a deep row.
+
+        ``_fill`` restores the cursor by row key on refreshes and sorts. Under
+        a live filter that would keep a deep selection and make the list look
+        as if it scrolls by itself, hiding the first matches.
+        """
+        table_id = self._active_table_id()
+        if table_id is None:
+            return
+        try:
+            table = self.query_one(f"#{table_id}", DataTable)
+        except Exception:
+            return
+        if table.row_count:
+            table.move_cursor(row=0)
+            table.scroll_home(animate=False)
+
+    def _sync_filter_bar(self) -> None:
+        """Show the active tab's saved filter, or hide the row entirely."""
+        try:
+            inp = self.query_one("#filter-input", Input)
+        except Exception:
+            return
+        pane = self.active_tab
+        value = (self._tab_filters.get(pane, "")
+                 if pane in FILTERABLE_TABS else "")
+        self._loading_filter = True
+        inp.value = value
+        self._loading_filter = False
+        inp.display = bool(value.strip())
+        inp.can_focus = bool(value.strip())
+
+    def action_open_filter(self) -> None:
+        pane = self.active_tab
+        if pane not in FILTERABLE_TABS:
+            return
+        try:
+            inp = self.query_one("#filter-input", Input)
+        except Exception:
+            return
+        inp.display = True
+        inp.can_focus = True
+        self._loading_filter = True
+        inp.value = self._tab_filters.get(pane, "")
+        self._loading_filter = False
+        inp.focus()
+        inp.cursor_position = len(inp.value)
+        self.call_after_refresh(self._anchor_active_table_top)
+
+    def action_close_filter(self) -> None:
+        # Esc = cancel: the needle goes away with the bar.
+        pane = self.active_tab
+        try:
+            inp = self.query_one("#filter-input", Input)
+        except Exception:
+            return
+        if not inp.display and not self._tab_filters.get(pane):
+            return
+        self._loading_filter = True
+        inp.value = ""
+        self._loading_filter = False
+        inp.display = False
+        inp.can_focus = False
+        self._tab_filters[pane] = ""
+        self._refresh_active_tab()
+        self._focus_active_table()
+        self.call_after_refresh(self._anchor_active_table_top)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        # The date modal owns its own inputs; anything else bubbling here is
+        # not the filter bar.
+        if event.input.id != "filter-input" or self._loading_filter:
+            return
+        pane = self.active_tab
+        if pane not in FILTERABLE_TABS:
+            return
+        self._tab_filters[pane] = event.value.strip()
+        self._refresh_active_tab()
+        self.call_after_refresh(self._anchor_active_table_top)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "filter-input":
+            return
+        # Enter hands the keys back to the table but keeps the bar visible:
+        # an applied filter is state the page must keep showing.
+        applied = bool(self._tab_filters.get(self.active_tab, "").strip())
+        event.input.display = applied
+        event.input.can_focus = applied
+        self._focus_active_table()
 
     def action_pop_screen(self) -> None:
         self.pop_screen()

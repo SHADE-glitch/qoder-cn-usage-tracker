@@ -12,6 +12,7 @@ import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 # `_helpers` puts scripts/ on sys.path, so it must be imported before qcut_db.
 from _helpers import (SCRIPTS, TempTree, assistant, compact, now_iso,
@@ -31,8 +32,9 @@ def load_tui(name="qcut_tui_test"):
 
 TUI = load_tui()
 
-# Timers are pushed far out of the way so a redraw cannot race a test.
-QUIET_CFG = dict(db.DEFAULTS, refresh_secs=3600, sync_secs=3600)
+# The app runs no background timers: one sync on mount, then only `r` reads the
+# host. Tests still pass the shipped defaults explicitly.
+QUIET_CFG = dict(db.DEFAULTS)
 
 # The eight slots, spelled out rather than derived from `TUI.TABS`. The panes are
 # *generated* from that tuple (`scripts/qcut-tui.py` builds them in a loop), so a
@@ -137,7 +139,7 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
                     app.query_one("#dash-row-2")
                     app.query_one("#dash-row-3")
                     app.query_one("#dash-row-4")
-                    app.query_one("#dash-commands")
+                    app.query_one("#panel-dash-cache")
                     continue
                 if tid == "usage":
                     app.query_one("#usage-box")
@@ -205,7 +207,7 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(tools.row_count, 1,
                                "`a` must bring back the installed builtins")
             note = str(app.query_one("#filter-tools", Static).content)
-            self.assertIn("showing all known tools", note)
+            self.assertIn("incl. installed-unused", note)
 
 
 class RangeTest(unittest.IsolatedAsyncioTestCase):
@@ -243,10 +245,10 @@ class RangeTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             self.assertEqual(app.query_one("#range", Select).value, "7d")
-            # The compact control carries only the calendar glyph; the active
-            # window is its tooltip, not a second copy of the Select's label.
+            # The button offers the picker while a preset is active; the span
+            # itself lives in the Select, so the two never print it twice.
             btn = app.query_one("#date-range", Button)
-            self.assertEqual(str(btn.label), "📅")
+            self.assertEqual(str(btn.label), "📅 Custom…")
             self.assertEqual(btn.tooltip, "7 days")
             tabs.active = "tools"
             await pilot.pause()
@@ -655,7 +657,7 @@ class WideTableTest(unittest.IsolatedAsyncioTestCase):
         """Every table id an ``id=`` argument can produce.
 
         The entity tabs build theirs from the tab id (``f"{tid}-table"``), so a
-        literal-only walk would miss seven of the nine tables and the reverse
+        literal-only walk would miss every table id built that way and the reverse
         check below could not be honest. An unrecognised shape yields no ids
         rather than a guess, so a new style of id shows up as a failure instead
         of silently passing.
@@ -1089,25 +1091,25 @@ class RowRoutingTest(unittest.IsolatedAsyncioTestCase):
         conn.close()
 
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
-        # The mount-time sync rebuilds `inventory` from the fixture tree and
-        # would erase the row this case is about; the tab under test is the
-        # toggle, not the sync.
-        app._auto_sync = False
-        async with app.run_test(size=(140, 40)) as pilot:
-            await self._tab(app, pilot, "mcp")
-            # The server is installed but unused, so the default view hides it;
-            # `a` is the installed ∪ ever-used switch.
-            await pilot.press("a")
-            await pilot.pause()
-            row = self._row_index(app, "mcp-table", "mcp\tidle-srv\t")
-            await self._open(app, pilot, "mcp-table", row=row)
-            top = app.screen
-            self.assertIsInstance(top, TUI.HistoryScreen)
-            # No tool half: the screen is the server's own history, with no
-            # filter invented from an absent cell.
-            self.assertEqual((top.kind, top.entity, top.tool),
-                             ("mcp", "idle-srv", None))
-            self.assertEqual(top.heading, "idle-srv")
+        # The launch sync rebuilds `inventory` from the fixture tree and would
+        # erase the row this case is about; the tab under test is the toggle,
+        # not the sync.
+        with mock.patch.object(TUI.TrackerApp, "_request_sync", lambda self: None):
+            async with app.run_test(size=(140, 40)) as pilot:
+                await self._tab(app, pilot, "mcp")
+                # The server is installed but unused, so the default view hides
+                # it; `a` is the installed ∪ ever-used switch.
+                await pilot.press("a")
+                await pilot.pause()
+                row = self._row_index(app, "mcp-table", "mcp\tidle-srv\t")
+                await self._open(app, pilot, "mcp-table", row=row)
+                top = app.screen
+                self.assertIsInstance(top, TUI.HistoryScreen)
+                # No tool half: the screen is the server's own history, with no
+                # filter invented from an absent cell.
+                self.assertEqual((top.kind, top.entity, top.tool),
+                                 ("mcp", "idle-srv", None))
+                self.assertEqual(top.heading, "idle-srv")
 
     async def test_an_mcp_row_with_no_server_opens_nothing(self):
         """An admin op (`mcp_list` and friends) has no server to scope a history
@@ -1347,13 +1349,48 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
             peak = str(app.query_one("#dash-rt-peak", Static).content)
             self.assertIn("42.0%", peak)
             await self._tab(app, pilot, "tokens")
-            note = str(app.query_one("#tokens-note", Static).content)
+            note = str(app.query_one("#filter-tokens", Static).content)
             # Coverage tracking is gone; the note keeps only the provider
             # legend and the meaning of the two dashes.
             self.assertNotIn("coverage", note.lower())
             self.assertNotIn("capture", note.lower())
             self.assertIn("`—` = this route reported no token", note)
             self.assertIn("Provider:", note)
+
+
+class TokenCaptureHintTest(unittest.IsolatedAsyncioTestCase):
+    async def test_credits_without_tokens_name_the_missing_cli_flag(self):
+        t = build_credit_only_db(self)
+        app = TUI.TrackerApp(db_path=t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            from textual.widgets import Static, TabbedContent
+            tabs = app.query_one(TabbedContent)
+            tabs.active = "tokens"
+            await pilot.pause()
+            await pilot.pause()
+            note = str(app.query_one("#filter-tokens", Static).content)
+            self.assertIn("token capture off", note)
+            self.assertIn("QODERCN_EXPOSE_TOKEN_USAGE=1", note)
+            tabs.active = "usage"
+            await pilot.pause()
+            await pilot.pause()
+            note = str(app.query_one("#usage-note", Static).content)
+            self.assertIn("token capture off", note)
+
+    async def test_a_window_with_real_tokens_does_not_warn(self):
+        """One zero-token turn is a fact, not evidence about the whole run."""
+        t = build_db(self)
+        app = TUI.TrackerApp(db_path=t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            from textual.widgets import Static, TabbedContent
+            tabs = app.query_one(TabbedContent)
+            tabs.active = "tokens"
+            await pilot.pause()
+            await pilot.pause()
+            note = str(app.query_one("#filter-tokens", Static).content)
+            self.assertNotIn("token capture off", note)
 
 
 class StatusLineTest(unittest.IsolatedAsyncioTestCase):
@@ -1372,20 +1409,43 @@ class StatusLineTest(unittest.IsolatedAsyncioTestCase):
             # counts, the freshness and any active warning.
             self.assertNotIn("schema v", text)
 
-    async def test_the_auto_sync_switch_is_a_state_not_a_message(self):
-        """`s` must not wipe the counts off the bar — the line carries the state."""
+    async def test_s_cycles_the_active_tabs_sort_and_keeps_the_status_counts(self):
+        """`s` is sort now: the note names the order, the rows follow it, and
+        the status line keeps the counts it carries (the old `s` was an
+        auto-sync switch that wrote over them)."""
         t = build_db(self)
         app = TUI.TrackerApp(db_path=t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(160, 40)) as pilot:
             await pilot.pause()
-            from textual.widgets import Static
-            self.assertIn("builtin calls", str(app.query_one("#status", Static).content))
+            from textual.widgets import DataTable, Static, TabbedContent
+            app.query_one(TabbedContent).active = "tools"
+            await pilot.pause()
+            await pilot.pause()
+            table = app.query_one("#tools-table", DataTable)
+            note = app.query_one("#filter-tools", Static)
+
+            def first_row():
+                key = next(iter(table.rows))
+                return str(table.get_row(key))
+
+            self.assertIn("sort: tab order", str(note.content))
             await pilot.press("s")
             await pilot.pause()
-            self.assertFalse(app._auto_sync)
+            self.assertIn("sort: calls", str(note.content))
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: recent", str(note.content))
+            self.assertIn("Edit", first_row(), "recent should put Edit first")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: name", str(note.content))
+            self.assertIn("Bash", first_row(), "name should put Bash first")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: tab order", str(note.content))
             text = str(app.query_one("#status", Static).content)
-            self.assertIn("auto-sync OFF", text)
-            self.assertIn("builtin calls", text, "toggling wiped the counts")
+            self.assertIn("builtin calls", text, "sorting wiped the status counts")
+            self.assertFalse(hasattr(app, "_auto_sync"))
 
     async def test_the_status_line_is_actually_on_screen(self):
         """Setting the text is not showing it: the bar once carried
@@ -1585,7 +1645,7 @@ class TokenDashTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["Input"], "50")
             self.assertEqual(row["Usage Total"], "55")
             self.assertEqual(row["Credits"], "1.75")
-            note = str(app.query_one("#tokens-note", Static).content)
+            note = str(app.query_one("#filter-tokens", Static).content)
             self.assertNotIn("coverage", note.lower())
             self.assertIn("Usage Total re-adds cache hit", note)
 
@@ -1691,6 +1751,168 @@ class ChromeTest(unittest.TestCase):
                          "the app overrides the canvas background")
         self.assertNotIn("background: $surface", css)
         self.assertNotIn("background: $panel", css)
+
+
+class UnifiedControlsTest(unittest.IsolatedAsyncioTestCase):
+    """The shortcuts shared with ocut/cbut: `s`, `/`, `a`, `d`, tab, and the
+    pushed screens that must not inherit them."""
+
+    async def asyncSetUp(self):
+        self.t = build_db(self)
+
+    async def _tab(self, app, pilot, tab):
+        from textual.widgets import TabbedContent
+        app.query_one(TabbedContent).active = tab
+        await pilot.pause()
+        await pilot.pause()
+
+    async def test_slash_filters_live_keeps_the_bar_and_clears_with_escape(self):
+        from textual.widgets import DataTable, Input, Static
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await self._tab(app, pilot, "tools")
+            inp = app.query_one("#filter-input", Input)
+            table = app.query_one("#tools-table", DataTable)
+            note = app.query_one("#filter-tools", Static)
+            self.assertFalse(inp.display, "the bar is hidden with no filter")
+            await pilot.press("slash")
+            await pilot.pause()
+            self.assertTrue(inp.display)
+            self.assertIs(app.focused, inp)
+            for ch in "edit":
+                await pilot.press(ch)
+            await pilot.pause()
+            self.assertEqual(inp.value, "edit")
+            self.assertEqual(table.row_count, 1)
+            self.assertIn("Edit", str(table.get_row(next(iter(table.rows)))))
+            self.assertIn('filter "edit" · 1 of 2', str(note.content))
+            self.assertEqual(table.cursor_row, 0,
+                             "a filter edit must start at the first match")
+            # Enter applies: focus returns to the table, the bar stays visible.
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(inp.display,
+                            "Enter closed the bar under a live filter")
+            self.assertIs(app.focused, table)
+            # The needle is per tab: Skills has none, so its bar is hidden.
+            await self._tab(app, pilot, "skills")
+            self.assertFalse(inp.display)
+            await self._tab(app, pilot, "tools")
+            self.assertTrue(inp.display)
+            self.assertEqual(inp.value, "edit")
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertFalse(inp.display)
+            self.assertEqual(inp.value, "")
+            self.assertEqual(table.row_count, 2)
+            self.assertNotIn("filter", str(note.content).lower())
+
+    async def test_usage_filter_and_sort_run_over_the_whole_window(self):
+        from textual.widgets import DataTable, Static
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await self._tab(app, pilot, "usage")
+            table = app.query_one("#usage-table", DataTable)
+            note = app.query_one("#usage-note", Static)
+
+            def first_row():
+                key = next(iter(table.rows))
+                return str(key.value), table.get_row(key)
+
+            self.assertIn("sort: time", str(note.content))
+            self.assertTrue(first_row()[0].endswith("\tm5"),
+                            "time sort: m5 is the newest request")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: tokens", str(note.content))
+            self.assertTrue(first_row()[0].endswith("\tm2"),
+                            "tokens sort: m2 has the largest usage total")
+            self.assertEqual(str(first_row()[1][3]), "220",
+                             "tokens sort must rank above the page's time order")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: credits", str(note.content))
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: model", str(note.content))
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: time", str(note.content))
+            # The filter runs in SQL over the window, not over the loaded page.
+            await pilot.press("slash")
+            await pilot.pause()
+            for ch in "builtin":
+                await pilot.press(ch)
+            await pilot.pause()
+            self.assertIn('filter "builtin" · 6 matches', str(note.content))
+            self.assertEqual(table.row_count, 6)
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertNotIn('filter "', str(note.content))
+
+    async def test_no_tab_scrolls_when_there_is_nothing_to_scroll(self):
+        """The screen itself never scrolls: a root measured two rows taller than
+        the terminal let every tab drift on an otherwise empty page."""
+        from textual.widgets import TabbedContent
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            for tab in app.TAB_IDS:
+                app.query_one(TabbedContent).active = tab
+                await pilot.pause()
+                await pilot.pause()
+                self.assertEqual(app.screen.max_scroll_y, 0,
+                                 f"{tab} can scroll with nothing to show")
+            await pilot.press("slash")
+            await pilot.pause()
+            self.assertEqual(app.screen.max_scroll_y, 0,
+                             "the visible filter row added screen scroll")
+
+    async def test_a_pushed_screen_owns_its_keys(self):
+        from textual.widgets import DataTable
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await self._tab(app, pilot, "tools")
+            app.query_one("#tools-table", DataTable).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            self.assertIsInstance(app.screen, TUI.HistoryScreen)
+            actions = {b.binding.action for b in app.active_bindings.values()}
+            for action in ("cycle_sort", "open_filter", "toggle_show_all",
+                           "date_range", "next_tab", "previous_tab",
+                           "refresh", "quit"):
+                self.assertNotIn(action, actions,
+                                 f"app shortcut {action!r} is live on a detail")
+            self.assertTrue(any("pop_screen" in action for action in actions),
+                            "the detail screen lost its Back binding")
+            before = dict(app._sort_mode)
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertEqual(app._sort_mode, before)
+            self.assertEqual(len(app.screen_stack), 2)
+            await pilot.press("q")
+            await pilot.pause()
+            self.assertEqual(len(app.screen_stack), 1,
+                             "q must be Back on a pushed screen, not Quit")
+
+    async def test_it_syncs_once_on_launch_and_keeps_no_timer(self):
+        calls = []
+        with mock.patch.object(TUI.TrackerApp, "_request_sync",
+                               lambda app: calls.append(app)):
+            app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                self.assertEqual(calls, [app], "launch must sync exactly once")
+                intervals = [getattr(timer, "_interval", None)
+                             for timer in app._timers]
+                self.assertFalse(any(value in (5, 5.0, 30, 30.0)
+                                     for value in intervals),
+                                 f"a refresh/sync timer survived: {intervals}")
+                self.assertFalse(hasattr(app, "_auto_sync"))
 
 
 class ClickCadenceTest(unittest.TestCase):

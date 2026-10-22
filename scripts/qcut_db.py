@@ -68,8 +68,6 @@ DEFAULTS = {
     "log_limit": 100,     # Usage page request rows
     "detail_limit": 200,  # rows on a history / model-response screen
     "name_cap": 28,       # widest cell a table renders before it cuts the value
-    "refresh_secs": 5,    # TUI redraw timer
-    "sync_secs": 30,      # TUI auto-sync timer
 }
 
 ENV_NAMES = {
@@ -77,8 +75,6 @@ ENV_NAMES = {
     "log_limit": "QCUT_LOG_LIMIT",
     "detail_limit": "QCUT_DETAIL_LIMIT",
     "name_cap": "QCUT_NAME_CAP",
-    "refresh_secs": "QCUT_REFRESH_SECS",
-    "sync_secs": "QCUT_SYNC_SECS",
 }
 
 # (low, high, accepted types). Ranges are wide enough to be useful and tight
@@ -89,8 +85,6 @@ _BOUNDS = {
     "log_limit": (1, 1000, int),
     "detail_limit": (1, 1000, int),
     "name_cap": (8, 200, int),
-    "refresh_secs": (0.5, 3600, (int, float)),
-    "sync_secs": (1, 86400, (int, float)),
 }
 
 
@@ -1914,6 +1908,27 @@ def row_reports_tokens(row) -> bool:
     return any((row[f] or 0) > 0 for f in _TOKEN_FIELDS if f in keys)
 
 
+def q_token_capture_gap(conn, start_ts=None, end_ts=None) -> bool:
+    """Whether a window of credit-bearing calls reported no token at all.
+
+    Qoder's hosted route writes credits either way; real token counts appear
+    only when the CLI process started with ``QODERCN_EXPOSE_TOKEN_USAGE=1``.
+    All-or-nothing, not "the newest row was empty": a zero-token turn is a real
+    row, and one such row must not accuse a window whose other calls carry
+    tokens.
+    """
+    where, params = _where(start_ts, end_ts, "model_calls")
+    where = (where + " AND credits IS NOT NULL" if where
+             else "WHERE credits IS NOT NULL")
+    token_any = " OR ".join(f"COALESCE({field}, 0) > 0" for field in _TOKEN_FIELDS)
+    row = conn.execute(f"""
+    SELECT COUNT(*) AS credit_rows,
+           SUM(CASE WHEN ({token_any}) THEN 1 ELSE 0 END) AS captured
+    FROM model_calls {where}
+    """, params).fetchone()
+    return bool(row["credit_rows"]) and not row["captured"]
+
+
 _Q_MODEL_STATS_ORDER = {
     "usage_total_tokens": "usage_total_tokens DESC, credits DESC, total_tokens DESC",
     "total_tokens": "total_tokens DESC, credits DESC",
@@ -2089,14 +2104,34 @@ def q_usage_summary(conn, start_ts, end_ts) -> dict:
     return data
 
 
-def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
-    """Per-response rows in the window, newest first (never re-parses logs).
+_USAGE_LOG_ORDER = {
+    "time": "ts DESC, message_id",
+    "tokens": "COALESCE(usage_total_tokens, 0) DESC, ts DESC, message_id",
+    "credits": "COALESCE(credits, 0) DESC, ts DESC, message_id",
+    "model": "model COLLATE NOCASE ASC, ts DESC, message_id",
+}
+
+
+def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
+                         text=None, order_by="time"):
+    """Per-response rows in the window (never re-parses logs).
 
     Carries both ``total_tokens`` (API total) and ``usage_total_tokens`` (the
     display-only re-add of the cache read), plus the three cache parts and the
     derived miss.
+
+    ``text`` filters in SQL, not over the loaded page: the list is capped at
+    ``limit``, and a client-side filter over 100 rows would report "no match"
+    for a request that exists below the cut. ``order_by`` is whitelisted for
+    the same reason every other order here is.
     """
     where, params = _where(start_ts, end_ts, "model_calls")
+    if text:
+        like = f"%{text}%"
+        where += (" AND (model LIKE ? OR project LIKE ?"
+                  " OR COALESCE(provider, '') LIKE ?)")
+        params += [like, like, like]
+    order = _USAGE_LOG_ORDER.get(order_by, _USAGE_LOG_ORDER["time"])
     return conn.execute(f"""
     SELECT ts, model, provider, session_id, project, message_id,
            input_tokens, output_tokens, cache_read_tokens,
@@ -2106,7 +2141,7 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
            {_USAGE_TOTAL_EXPR} AS usage_total_tokens,
            {_CACHE_MISS_EXPR} AS cache_miss_tokens
     FROM model_calls {where}
-    ORDER BY ts DESC, message_id
+    ORDER BY {order}
     LIMIT ? OFFSET ?
     """, params + [limit, offset]).fetchall()
 

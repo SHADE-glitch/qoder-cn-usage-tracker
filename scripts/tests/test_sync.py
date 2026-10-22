@@ -638,7 +638,7 @@ class IncrementalTest(unittest.TestCase):
 
     def test_repeated_syncs_stabilise_every_table_in_the_schema(self):
         """The promise is "sync is idempotent", and the case above only looked at
-        two of the nine tables.
+        two tables.
 
         `inventory` was the one that broke: it has no unique key, so
         `INSERT OR REPLACE` never conflicted and each sync appended another copy

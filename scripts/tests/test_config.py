@@ -162,14 +162,17 @@ class PrecedenceTest(unittest.TestCase):
             finally:
                 os.environ.pop("QCUT_TOP_N")
 
-    def test_a_float_setting_accepts_a_float(self):
+    def test_a_fractional_integer_setting_is_refused(self):
+        """No setting is a duration any more, so the env parse has one rule:
+        a fractional value for an integer knob is a typo, not a rounding
+        opportunity."""
         with no_settings_env():
-            os.environ["QCUT_REFRESH_SECS"] = "2.5"
+            os.environ["QCUT_LOG_LIMIT"] = "2.5"
             try:
-                cfg = db.load_config(self.t.write(""))
+                with self.assertRaises(db.ConfigError):
+                    db.load_config(self.t.write(""))
             finally:
-                os.environ.pop("QCUT_REFRESH_SECS")
-        self.assertEqual(cfg["refresh_secs"], 2.5)
+                os.environ.pop("QCUT_LOG_LIMIT")
 
 
 class WiringTest(unittest.TestCase):

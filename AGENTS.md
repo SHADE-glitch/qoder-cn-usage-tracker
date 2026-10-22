@@ -45,8 +45,9 @@ carry the user-facing version under "Relationship to cbut".
 
 **There are two writers, not one.** `qcut sync` is the only thing that indexes
 transcripts, but the TUI also writes: `on_mount` runs `db.ensure_schema()` and
-its auto-sync worker calls the same indexer the CLI does. Anything that assumes
-"the TUI is read-only" is wrong — reason about locks accordingly. The headless
+the sync worker it starts on launch (or on `r`) calls the same indexer the CLI
+does. Anything that assumes "the TUI is read-only" is wrong — reason about locks
+accordingly. The headless
 CLI is read-only except for its explicit maintenance subcommands (`backup`,
 `restore`, `vacuum`, `format --write`).
 

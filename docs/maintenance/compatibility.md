@@ -13,12 +13,12 @@ date, not a policy — re-measure before restating any of it.
 
 | Interpreter | Suite |
 |---|---|
-| Python 3.11.15 | 310 OK (2026-10-12; CI is the record for the 380-case suite) |
-| Python 3.13.14 (the `install.sh` venv) | 380 OK (2026-10-21) |
-| Python 3.14.4 | 380 OK (2026-10-21) |
+| Python 3.11.15 | 310 OK (2026-10-12; CI is the record for the 387-case suite) |
+| Python 3.13.14 (the `install.sh` venv) | 387 OK (2026-10-22) |
+| Python 3.14.4 | 380 OK (2026-10-21; before the current seven cases) |
 
 The 310-case row is the last local measurement for 3.11 with `textual 8.2.8`; the suite has since
-grown to 380 cases. Re-run there before claiming a local green on 3.11. The per-suite counts are
+grown to 387 cases. Re-run there before claiming a local green on 3.11. The per-suite counts are
 in [`baseline.md`](baseline.md).
 
 ## Qoder CN CLI

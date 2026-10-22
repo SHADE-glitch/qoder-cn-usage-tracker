@@ -30,6 +30,7 @@
 - [🧬 Relationship to cbut](#-relationship-to-cbut)
 - [🏗️ How it works](#️-how-it-works)
 - [📊 The eight tabs](#-the-eight-tabs)
+- [⌨️ Keyboard](#️-keyboard)
 - [🔑 Token capture](#-token-capture)
 - [💳 Credits vs tokens](#-credits-vs-tokens)
 - [📋 Requirements](#-requirements)
@@ -127,14 +128,14 @@ button applies the picked start/end to the active tab only.
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | a Usage panel (requests, credits, sessions, projects, builtin calls, skills, agent runs, MCP, commands, plugins), a Tokens panel with cache hit rate, runtime (completed / failed / pending / average tool time / peak context / compaction tax), a per-day sparkline with credits, Top N models, Top tools and Top commands, and the **project board** (requests · usage total · credits · peak ctx · last used) — all for the Dashboard's own window |
+| 🧭 | **Dashboard** | a Usage panel (requests, credits, sessions, projects, builtin calls, skills, agent runs, MCP, plugins), a Tokens panel (usage total · input · output · API total · credits · cache hit rate), a Cache panel, runtime (completed / failed / pending / average tool time / sessions / projects / bg-cancel / peak context / compaction tax), a per-day calls sparkline, Top models, Top tools, and the **project board** (requests · usage total · credits · peak ctx · last used) — all for the Dashboard's own window |
 | 🧰 | **Tools** | builtin tool calls by name: calls · ok · fail · pending · average duration · last used |
 | 🎯 | **Skills** | skill invocations by name: calls · ok · fail · owning plugin · last used |
 | 🤖 | **Agents** | subagent types: **runs · ok · fail · linked requests · usage total · credits · peak context · last used**; a run with no linked response reads `0` requests and `-` tokens |
 | 🧩 | **Plugins** | every plugin — installed **and** ever used — with source, version, attributed uses and installed resources; all-time |
 | 🔌 | **MCP** | MCP targets: server · tool · calls · ok · fail · average duration · last used; an admin op shows `(admin)` |
-| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **usage total · credits · requests**, input / output / API total, cache hit / miss / write, hit rate, last used |
-| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **usage total · credits** · input · output · API total · cache hit / miss / write · hit rate. <kbd>Enter</kbd> opens that exact call |
+| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **usage total · credits · requests**, input / output / API total, cache hit / miss / write, cache hit rate, last used |
+| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **usage total · credits** · input · output · API total · cache hit / miss / write · cache hit rate. <kbd>Enter</kbd> opens that exact call |
 
 `Provider` is one column, not a family plus a name: Qoder's own route reads
 `Built-in`, and a BYOK/third-party call shows the channel that served it.
@@ -143,11 +144,38 @@ button applies the picked start/end to the active tab only.
 Tokens tab has always had.** Press <kbd>a</kbd> to switch to the installed ∪
 ever-used set (the filter note says how many rows are hidden); Plugins is always
 the full install ledger. Tokens and Usage are ranked by **usage total, then
-credits**; Top tools and Top commands by call count.
+credits**; Top tools by call count.
 
 A table never shows a half column: each table keeps the longest **prefix** of its
 columns that fits and names the dropped ones on the note line above it, so a
 narrow terminal costs columns, not legibility.
+
+## ⌨️ Keyboard
+
+The tab bar and footer are the whole key surface, and the same keys work in the
+sibling `ocut` and `cbut` trackers.
+
+| Key | Action |
+|---|---|
+| `q` | quit |
+| `r` | sync now — one incremental sync, then reload the screen |
+| `s` | cycle the active tab's sort order; the note above the table names it |
+| `a` | on Tools / Skills / Agents / MCP, show the installed ∪ ever-used rows |
+| `/` | filter the active tab; the bar stays visible while a filter is applied, `enter` returns to the table, `escape` clears it |
+| `d` | pick the active tab's time window |
+| `tab` / `shift+tab` | next / previous tab |
+| `enter` / double-click | open the selected row's detail screen |
+| `escape` / `q` | clear the active filter, or go back from a pushed detail screen |
+
+The TUI runs **one** incremental sync when it opens and then stops: no timer
+redraws the page, and no background sync writes to the index. New rows arrive
+through `r` or by reopening the TUI. A filter edit starts the list at its first
+match, and the note line above each table names the active sort and the filter
+count. Usage filters and ranks in SQL over the whole window — not only the
+visible page — so `log_limit` caps the output without hiding matches.
+
+Pushed detail screens own their keys: the app-level shortcuts go quiet there and
+the screen's own `escape`/`q` Back remains.
 
 ## 🔑 Token capture
 
@@ -168,7 +196,9 @@ export QODERCN_EXPOSE_TOKEN_USAGE=1
 - **Past calls cannot be repaired.** The transcripts already hold zeros and are never
   rewritten. Those rows keep their credits, and their token cells read `—` — never a
   measured `0`. There is no coverage percentage or capture-boundary ledger: the index
-  simply shows what each row reported.
+  simply shows what each row reported. When a window's credit-bearing rows carry no
+  token at all, the Usage and Tokens notes say so where the dashes are read:
+  `token capture off — set QODERCN_EXPOSE_TOKEN_USAGE=1 before starting Qoder`.
 
 qcut never edits `~/.qoder-cn`, your shell profile, or the CLI's environment.
 `qcut env` is a read-only advisor: it names the variable, reports whether it is set,
@@ -294,17 +324,15 @@ Every knob has the value the app already shipped with, and the file is optional:
 `~/.config/qcut/config.toml` — or point `QCUT_CONFIG` somewhere else:
 
 ```toml
-top_n = 5            # rows in the Dashboard's Top models / tools / commands
+top_n = 5            # rows in the Dashboard's Top models / Top tools
 log_limit = 100      # request rows on the Usage page
 detail_limit = 200   # rows on a history screen
 name_cap = 28        # widest cell a table renders before it cuts the value
-refresh_secs = 5     # TUI redraw timer
-sync_secs = 30       # TUI auto-sync timer
 ```
 
 - **Precedence is environment > file > default.** Each key also reads from
-  `QCUT_TOP_N`, `QCUT_LOG_LIMIT`, `QCUT_DETAIL_LIMIT`, `QCUT_NAME_CAP`,
-  `QCUT_REFRESH_SECS` and `QCUT_SYNC_SECS`.
+  `QCUT_TOP_N`, `QCUT_LOG_LIMIT`, `QCUT_DETAIL_LIMIT` and `QCUT_NAME_CAP`.
+  There is no refresh or sync interval: the TUI is event-driven.
 - **A broken file stops the TUI** with the path and the reason rather than
   quietly starting on defaults. `qcut health` prints the same verdict.
 - **Unknown keys are refused**, and values are type- and range-checked.
@@ -328,7 +356,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 380 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 387 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -346,7 +374,7 @@ this repository reaches the network.
 | `test_snapshots.py` | 14 | the destructive step's way back: the snapshot is taken *before* the change, it is an online backup rather than a byte copy of a file whose committed rows are still in the `-wal`, a restore keeps the state it overwrote, retention prunes only what it made, and an index whose offsets were lost is still worth a snapshot |
 | `test_config.py` | 19 | the settings layer: defaults, file, environment precedence and bounds, a broken file that names its path, the keys `qcut health` prints, and that **every declared knob has a renderer that reads it** — a setting the user can edit for no effect is the failure this pins |
 | `test_privacy.py` | 15 | an **allowlist** of each production script's whole import surface — plus the two things a list of imports cannot see: a call reached through a module that is already declared (`os.system`) and a module named in a string — a fingerprint proving the source tree is untouched, a sentinel scan across every text column, and a positive control for each |
-| `test_tui.py` | 65 | tab wiring through Textual's own `run_test` harness, the resize axis (`on_resize` re-plans every table; a narrow plan is a prefix of its registry and names what it hid; rows and row *keys* survive the rebuild), click cadence (two `pilot.click` lines with no pause between them are a race the runner wins or loses), per-tab ranges, the Plugins tab's missing window, the column plan, empty states, the used-only default and the `a` switch to installed ∪ ever-used, drill-down including provider-scoped Tokens and server+tool MCP routing, the agent-type → run-history → responses ladder, the Dashboard project → session → requests ladder (and the NULL project as its own group), the per-row `—`/`-`/number distinction on both measure axes, the compaction notes, the plain tab titles and the default canvas colour, which screen owns the rows of which table, the cbut-shaped date picker (six shortcut chips, roomy 79×30 geometry, scroll on a short terminal), and the status line as it is **actually rendered** |
+| `test_tui.py` | 72 | tab wiring through Textual's own `run_test` harness, the resize axis (`on_resize` re-plans every table; a narrow plan is a prefix of its registry and names what it hid; rows and row *keys* survive the rebuild), click cadence (two `pilot.click` lines with no pause between them are a race the runner wins or loses), per-tab ranges, the Plugins tab's missing window, the column plan, empty states, the used-only default and the `a` switch to installed ∪ ever-used, drill-down including provider-scoped Tokens and server+tool MCP routing, the agent-type → run-history → responses ladder, the Dashboard project → session → requests ladder (and the NULL project as its own group), the per-row `—`/`-`/number distinction on both measure axes, the compaction notes, the plain tab titles and the default canvas colour, which screen owns the rows of which table, the cbut-shaped date picker (six shortcut chips, roomy 79×30 geometry, scroll on a short terminal), the shared `s` / `/` / `a` / `d` keys (per-tab sort cycles, a live filter that stays visible and restarts at its first match, a screen that cannot scroll with nothing to show), one launch sync and no background timer, pushed detail screens owning their keys, and the status line as it is **actually rendered** |
 | `test_dispatcher.py` | 9 | `bin/qcut` routing, flag pass-through, and the failure modes that are the reason it is bash |
 | `test_format_registry.py` | 10 | an AST mirror of the format registry against the parser beside it: every field read is registered, every registered field is still read, the dispatch chain and the registry claim the same record types, and no separator, path segment or tool name is typed at a call site |
 | `test_maintenance_docs.py` | 11 | the generated format document equals what `qcut format` prints today, every maintenance asset is reachable from the router, every link resolves, and the CI matrix pins the floor `pyproject.toml` actually declares |
@@ -371,7 +399,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 380 tests above |
+| `scripts/tests/` | the 387 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
