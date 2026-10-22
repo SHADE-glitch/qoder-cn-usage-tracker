@@ -884,6 +884,34 @@ class ResizeTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
 
 
+    async def test_the_dashboard_legend_is_one_row_at_every_width(self):
+        """A wrapping legend steals a row from the ledger under it.
+
+        The sentence used to be 168 cells, so on a 120- or 160-column terminal
+        it took two rows and pushed the project board down. It is now short
+        enough for a normal terminal and clips (nowrap + ellipsis) when it is
+        not, instead of wrapping onto a second row.
+        """
+        from textual.widgets import Static
+        for size in ((120, 40), (80, 24)):
+            with self.subTest(size=size):
+                app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+                async with app.run_test(size=size) as pilot:
+                    await pilot.pause()
+                    note = app.query_one("#dash-note", Static)
+                    self.assertEqual(note.size.height, 1,
+                                     "the legend wrapped onto a second row")
+                    self.assertEqual(str(note.styles.text_wrap), "nowrap")
+                    self.assertEqual(str(note.styles.text_overflow), "ellipsis")
+                    line = note.render_line(0).text
+                    self.assertLessEqual(len(line), note.size.width,
+                                         "the legend line overflowed its row")
+                    if size[0] >= 120:
+                        # A normal terminal shows the whole legend, not a stub.
+                        self.assertNotIn("…", line)
+                        self.assertIn("Enter = open a project", line)
+
+
 class DrilldownTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.t = build_db(self)

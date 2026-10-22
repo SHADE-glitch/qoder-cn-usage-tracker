@@ -175,7 +175,7 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 |---|---:|
 | `test_usage.py` | 72 |
 | `test_sync.py` | 68 |
-| `test_tui.py` | 72 |
+| `test_tui.py` | 73 |
 | `test_stats.py` | 56 |
 | `test_config.py` | 19 |
 | `test_snapshots.py` | 14 |
@@ -188,23 +188,23 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
 | `test_conventions.py` | 9 |
-| **total** | **387** |
+| **total** | **388** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is the bulk of
 the run, the other fourteen together a few seconds.
 
 The suite was green on all three interpreters at the 310-case snapshot, with
 `textual 8.2.8` installed in each — that pair is what the CI matrix pins (floor
-from `requires-python`, plus the highest version measured). The current 387-case
-suite has been re-run locally on 3.13; the 3.14 and 3.11 rows below are earlier,
-smaller-suite runs, so CI remains the record for those ends until they are
-re-measured here:
+from `requires-python`, plus the highest version measured). The current 388-case
+suite has been re-run locally on 3.13 (before its last case) and 3.14; the 3.11
+row below is an earlier, smaller-suite run, so CI remains the record for that end
+until it is re-measured here:
 
 | interpreter | result |
 |---|---|
-| Python 3.11.15 | 310 OK (2026-10-12); CI is the record for 387 |
-| Python 3.13.14 (the `install.sh` venv) | 387 OK (2026-10-22), 194 s |
-| Python 3.14.4 | 380 OK (2026-10-21), 205 s (before the current seven cases) |
+| Python 3.11.15 | 310 OK (2026-10-12); CI is the record for 388 |
+| Python 3.13.14 (the `install.sh` venv) | 387 OK (2026-10-22), 194 s (before the legend case) |
+| Python 3.14.4 | 388 OK (2026-10-22), 220 s |
 
 `test_config.py` and `test_tui.py` need `textual`; the other thirteen are
 stdlib-only.

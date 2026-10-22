@@ -1772,6 +1772,9 @@ class TrackerApp(WideTableMixin, App):
     #usage-window { padding: 0; }
     #usage-note, #dash-note, #filter-tokens, #hist-head, #resp-head, #plugin-head {
         padding: 0 1; color: $text-muted; height: auto; }
+    /* The dashboard legend is a footer, not prose: one row, clipped if the
+       terminal is too narrow for it. */
+    #dash-note { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     #usage-table { height: 1fr; min-height: 6; }
     .summary-panels.compact, .dash-row.compact { layout: vertical; }
     /* Stacked one-per-row wastes the width a narrow terminal still has: at
@@ -2335,9 +2338,8 @@ class TrackerApp(WideTableMixin, App):
                 "No data in this window — widen the range above.")
         else:
             self.query_one("#dash-note", Static).update(
-                "Provider: Built-in = Qoder; otherwise the BYOK channel that "
-                "served the call. `—` = the route reported no token; `-` = no "
-                "data. Enter a project row to open its sessions.")
+                "Provider: Built-in = Qoder, else BYOK · `—` = no token · "
+                "`-` = no data · Enter = open a project")
 
     def _render_project_board(self, conn, start, end) -> None:
         rows = db.q_project_board(conn, start, end)
