@@ -490,16 +490,10 @@ Re-measure before restating any of these; the commands are in
 
 ## Listed on the GitHub profile
 
-**This repository is not on the owner's profile front page, and that is not an oversight.** It is a
-**private** repository, and `SHADE-glitch/SHADE-glitch` lists public repositories only — the two
-whitelisted private repos are the sole exception, and this is not one of them. The profile's own
-`AGENTS.md` is the authoritative rulebook, and its §1 is explicit on both counts: naming another
-private repo needs the owner's spoken approval first, and **a repo must never be flipped to public
-just so it can be listed** — that is a privacy decision, not a profile edit.
-
-So there is no listing obligation today, and this section exists to say so rather than to be
-silently absent. If the repo is ever made public **and** added to the profile, this section becomes
-the reciprocal of the profile's §6 index, and these facts must then be kept true on the front page:
+**This repository is listed on the owner's profile front page**, and this section is the reciprocal
+of `SHADE-glitch/SHADE-glitch`'s §6 index — that file is the authoritative rulebook. It became
+**public on 2026-10-22** by the owner's explicit decision (the visibility call came first; the row
+followed in the same round, not the other way round). These facts must stay true on the front page:
 
 - **Rename / transfer / delete** — the profile link dies; fix the row.
 - **Purpose drift** — the profile's one-line description must still be true; the claims it copies —
