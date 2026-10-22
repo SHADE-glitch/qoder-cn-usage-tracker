@@ -52,6 +52,19 @@ try:
         TabbedContent,
         TabPane,
     )
+
+    class Table(DataTable):
+        """A DataTable whose enter key is in the footer.
+
+        Textual binds `enter` on DataTable with `show=False`, so the one key
+        that opens a row's detail was the one key the footer hid — and an
+        app-level `enter` binding cannot fix it, because the focused table's
+        own binding wins. Same action, visible name. Only the tables whose rows
+        actually open something use it; a table with no detail stays plain, so
+        the footer never advertises a dead key.
+        """
+
+        BINDINGS = [Binding("enter", "select_cursor", "Open")]
 except ImportError:  # pragma: no cover - the CLI prints this, not a traceback
     print("qcut: the TUI needs the 'textual' package.\n"
           "  ./install.sh        (creates .venv with textual)\n"
@@ -1238,7 +1251,7 @@ class HistoryScreen(WideTableMixin, Screen):
         yield TopBar(f"{self.kind} · {self.heading}")
         yield Static(id="hist-head")
         yield Static("", id="colnote-hist", classes="colnote")
-        yield DataTable(id="hist-table", zebra_stripes=True)
+        yield Table(id="hist-table", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1378,7 +1391,7 @@ class ProjectScreen(WideTableMixin, Screen):
         yield TopBar(f"project · {self.heading}")
         yield Static(id="project-head")
         yield Static("", id="colnote-project", classes="colnote")
-        yield DataTable(id="project-table", zebra_stripes=True)
+        yield Table(id="project-table", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1459,7 +1472,7 @@ class RequestsScreen(WideTableMixin, Screen):
         yield TopBar(f"requests · {self.heading}")
         yield Static(id="req-head")
         yield Static("", id="colnote-req", classes="colnote")
-        yield DataTable(id="req-table", zebra_stripes=True)
+        yield Table(id="req-table", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1559,7 +1572,7 @@ class ModelResponsesScreen(WideTableMixin, Screen):
         yield TopBar(f"model · {self.heading}")
         yield Static(id="resp-head")
         yield Static("", id="colnote-resp", classes="colnote")
-        yield DataTable(id="resp-table", zebra_stripes=True)
+        yield Table(id="resp-table", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2016,7 +2029,7 @@ class TrackerApp(WideTableMixin, App):
                             ),
                             Static(id="usage-note"),
                             Static("", id="colnote-usage", classes="colnote"),
-                            DataTable(id="usage-table", zebra_stripes=True),
+                            Table(id="usage-table", zebra_stripes=True),
                             id="usage-box",
                         )
                     elif tid == "tokens":
@@ -2029,7 +2042,7 @@ class TrackerApp(WideTableMixin, App):
                         # column-plan note because the two can both be present.
                         yield Static("", id=f"filter-{tid}", classes="filternote")
                         yield Static("", id=f"colnote-{tid}", classes="colnote")
-                        yield DataTable(id=f"{tid}-table", zebra_stripes=True)
+                        yield Table(id=f"{tid}-table", zebra_stripes=True)
         yield Static("", id="status")
         yield Footer()
 

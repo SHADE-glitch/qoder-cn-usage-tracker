@@ -690,8 +690,10 @@ class WideTableTest(unittest.IsolatedAsyncioTestCase):
         tree = ast.parse((SCRIPTS / "qcut-tui.py").read_text(encoding="utf-8"))
         ids = set()
         for node in ast.walk(tree):
+            # `Table` is the DataTable subclass that re-exposes enter in the
+            # footer; both are tables, and both need a plan.
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id == "DataTable"):
+                    and node.func.id in ("DataTable", "Table")):
                 for kw in node.keywords:
                     if kw.arg == "id":
                         ids |= self._ids_for(kw.value)
