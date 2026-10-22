@@ -912,6 +912,38 @@ class ResizeTest(unittest.IsolatedAsyncioTestCase):
                         self.assertIn("Enter = open a project", line)
 
 
+    async def test_the_project_ledger_takes_the_height_the_rows_leave(self):
+        """A content-sized dashboard ended above the status line on a tall screen.
+
+        The ledger is the only panel that can use extra rows, so it grows into
+        them; on a short screen it keeps its natural height and the box
+        scrolls, so the growth can never clip a project.
+        """
+        from textual.widgets import DataTable, Static
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            box = app.query_one("#dash-box")
+            table = app.query_one("#dash-projects", DataTable)
+            note = app.query_one("#dash-note", Static)
+            self.assertEqual(box.max_scroll_y, 0,
+                             "a tall dashboard still scrolls")
+            self.assertGreater(table.size.height, 1 + table.row_count,
+                               "the ledger never took the spare height")
+            self.assertEqual(note.region.bottom, box.region.bottom,
+                             "the ledger did not reach the bottom of the box")
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(120, 20)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            box = app.query_one("#dash-box")
+            table = app.query_one("#dash-projects", DataTable)
+            self.assertEqual(table.size.height, 1 + table.row_count,
+                             "a short box grew the ledger instead of scrolling")
+            self.assertGreater(box.max_scroll_y, 0,
+                               "the short box does not scroll")
+
 class DrilldownTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.t = build_db(self)
