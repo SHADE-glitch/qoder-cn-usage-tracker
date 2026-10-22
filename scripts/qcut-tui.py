@@ -2292,28 +2292,42 @@ class TrackerApp(WideTableMixin, App):
                 "nothing in this window")
         else:
             top = models[:self.cfg["top_n"]]
+            # Sized to the panel: a fixed 41-cell line fits the three-up row at
+            # 140 columns until a credit total or a count grows a digit.
+            panel = self.query_one("#dash-models", Static)
+            budget = (panel.size.width or 41) - 1
+            nums = [fmt_compact_n(r["usage_total_tokens"]) for r in top]
+            creds = [fmt_credit_total(r["credits"], r["credits_carried"]) for r in top]
+            num_w = max(len(n) for n in nums)
+            cred_w = max(len(c) for c in creds)
+            label_w = max(8, budget - (num_w + cred_w + 8))
             def name(r):
                 # The same merged label as the Tokens tab: a built-in row says
                 # `Built-in`, a BYOK row names the channel that served it.
                 return clip(f"{r['model']} · {db.provider_label(r['provider'])}",
-                            18)
+                            label_w)
             self.query_one("#dash-models", Static).update("\n".join(
-                f"{i}. {name(r):<18}{fmt_compact_n(r['usage_total_tokens']):>7} tok"
-                f" {fmt_credit_total(r['credits'], r['credits_carried']):>8}"
-                for i, r in enumerate(top, 1)))
+                f"{i}. {name(r):<{label_w}}{n:>{num_w}} tok {c:>{cred_w}}"
+                for i, (r, n, c) in enumerate(zip(top, nums, creds), 1)))
 
         # The name-keyed list keeps 0-call tools under a window; drop them.
         live = [r for r in tools if r["calls"]][:self.cfg["top_n"]]
         if not live:
             self.query_one("#dash-tools", Static).update("nothing in this window")
         else:
-            # 3 + 16 + 11 + 3 + 5 = 38 columns, inside the 41 a three-up row
-            # gets at 140; the old 20/12 variant wrapped the latency onto its
-            # own line.
+            # Sized to the panel too: the old 20/12 variant wrapped the latency
+            # onto its own line, and a fixed 38 fits only until the counts grow.
+            panel = self.query_one("#dash-tools", Static)
+            budget = (panel.size.width or 41) - 1
+            calls = [count_n(r["calls"], "call") for r in live]
+            spans = [ms(r["avg_ms"]) for r in live]
+            call_w = max(len(c) for c in calls)
+            span_w = max(len(s) for s in spans)
+            name_w = max(8, budget - (call_w + span_w + 6))
             self.query_one("#dash-tools", Static).update("\n".join(
-                f"{i}. {clip(r['tool_name'], 16):<16}"
-                f"{count_n(r['calls'], 'call'):>11} · {ms(r['avg_ms'])}"
-                for i, r in enumerate(live, 1)))
+                f"{i}. {clip(r['tool_name'], name_w):<{name_w}}"
+                f"{c:>{call_w}} · {s:>{span_w}}"
+                for i, (r, c, s) in enumerate(zip(live, calls, spans), 1)))
 
         self._render_project_board(conn, start, end)
         if not any(kpi.values()) and not (summary["requests"] or 0):
