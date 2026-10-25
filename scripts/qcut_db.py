@@ -1450,11 +1450,7 @@ def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None,
                COALESCE(r.requests, 0) AS requests,
                r.input_tokens, r.output_tokens,
                r.cache_read_tokens, r.cache_creation_tokens,
-               CASE WHEN r.input_tokens IS NOT NULL
-                          AND r.output_tokens IS NOT NULL
-                    THEN r.input_tokens + r.output_tokens
-                         + COALESCE(r.cache_read_tokens, 0)
-                    ELSE NULL END AS usage_total_tokens,
+               r.usage_total_tokens,
                r.credits, COALESCE(r.credits_carried, 0) AS credits_carried,
                COALESCE(r.token_covered, 0) AS token_covered,
                r.peak_context
@@ -1465,6 +1461,11 @@ def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None,
                    SUM(output_tokens) AS output_tokens,
                    SUM(cache_read_tokens) AS cache_read_tokens,
                    SUM(cache_creation_tokens) AS cache_creation_tokens,
+                   -- Usage Total is decided per row, then summed (_AGG_USAGE_TOTAL_EXPR):
+                   -- a response missing one half has no total of its own, and summing the
+                   -- columns first would hide that — the run would report a number the rows
+                   -- do not justify (2026-10-25: 140 where the rows justify 110).
+                   {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,
                    SUM(credits) AS credits,
                    {_AGG_CREDITS_CARRIED_EXPR} AS credits_carried,
                    {_AGG_TOKEN_COVERED_EXPR} AS token_covered,

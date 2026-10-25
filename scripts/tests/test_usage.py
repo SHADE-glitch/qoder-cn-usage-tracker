@@ -915,6 +915,35 @@ class LedgerQueryTest(unittest.TestCase):
         rows = self.q(db.q_agent_run_calls, "a1")
         self.assertEqual([r["call_id"] for r in rows], ["m2", "m1"])
 
+    def test_a_partly_reported_response_does_not_inflate_a_runs_usage_total(self):
+        """Usage Total is decided per response, then summed.
+
+        A response that reports output but not input has no total of its own, so
+        it contributes nothing. Summing the columns first makes the missing half
+        invisible — the run then reports 140 where its rows only justify 110.
+        """
+        conn = self.t.conn()
+        try:
+            conn.execute(
+                "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+                " provider, input_tokens, output_tokens, cache_read_tokens, credits,"
+                " context_usage_ratio, is_sidechain, has_usage, parent_call_id)"
+                " VALUES"
+                " ('p1','s3','/c',?, 'qfmodel','builtin', 100,10,0, 0, 0.10, 0,1,'a3'),"
+                " ('p2','s3','/c',?, 'qfmodel','builtin', NULL,30,0, 0, 0.10, 0,1,'a3')",
+                (self.t0, self.t0))
+            conn.execute(
+                "INSERT INTO agent_usage(call_id, agent_type, session_id, project, ts,"
+                " status) VALUES ('a3','Explore','s3','/c',?,'completed')", (self.t0,))
+            conn.commit()
+            row = [r for r in db.q_history(conn, "agent", "Explore")
+                   if r["call_id"] == "a3"][0]
+            self.assertEqual(row["usage_total_tokens"], 110,
+                             "sum-then-CASE counted the response with no input")
+            self.assertEqual(row["requests"], 2)
+        finally:
+            conn.close()
+
     def test_a_project_board_carries_cost_and_compaction_tax(self):
         rows = {r["project"]: r for r in self.q(db.q_project_board)}
         self.assertEqual(rows["/a"]["requests"], 2)
