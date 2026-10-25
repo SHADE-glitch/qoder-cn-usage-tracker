@@ -360,7 +360,7 @@ see [`AGENTS.md`](AGENTS.md#invariants-and-how-to-check-them).
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 389 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 405 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual`
@@ -373,6 +373,7 @@ this repository reaches the network.
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 68 | transcript parsing, classification (tool / skill / agent / MCP, including a direct `mcp__server__tool` tool name), route origin, inventory, incremental and full re-sync, rewritten and unterminated tails, timestamped-status pairing, unparsed accounting, `model_calls` counted once per inserted row, a Skill result's own `commandName` refused as a slash command, the generated format document's token-capture section, idempotency across **every** table in the schema, a sidechain response linked to its launching run through Qoder's own `parent_tool_use_id`, `compact_boundary` metadata indexed without its prose, an unreadable transcript reported and retried, crash safety |
+| `test_cross_repo_golden.py` | 16 | the cross-repo golden fixture: one fixed input set (NULL / partial / cache-missing token rows, model spellings, local-midnight and cross-hour boundaries, both 2026 US DST days) run through this repo's own Usage Total expression, window aggregates, model rollup, typed date entry and calendar-day windows, pinned to the canonical file shared with cbut and ocut |
 | `test_usage.py` | 72 | the calendar-day windows, the provider label, cache hit rate, every query helper, the "installed ∪ used" union, the token flag that still separates measured rows from legacy zeros, provider- and tool-filtered history, slash-command ranking, entity existence kept apart from a quiet window, run cost aggregated only through explicit links, the project/session/request ladder, the compaction summary and its context tax, schemas (including the additive v1→v2 migration and the v3 command/skill/MCP repair), the minimal snapshot→list→restore round trip, a fresh install with no database yet, and the headless reports' wording |
 | `test_stats.py` | 56 | the headless CLI end to end: real `main([...])` calls for every subcommand, `--db`, `--limit` and `--all`, the read-only connection, the stale-index refusal, `export` / `inventory` / `recent` / `show` / `health`, the `agents` and `projects` ledgers (including a project that has never existed), the `commands` report, `env` with the flag set and unset, `vacuum` on a temp database (snapshot, `quick_check`, unchanged row totals), a malformed settings file reported as a message rather than a traceback, the `backup`/`restore` pair, `format --write` splicing between the markers and **refusing** to append into a document that lost them, a name `show` has never seen refused instead of drawn as zeros, the span the index actually covers, and the launcher refusing to touch a path it was not given |
 | `test_snapshots.py` | 14 | the destructive step's way back: the snapshot is taken *before* the change, it is an online backup rather than a byte copy of a file whose committed rows are still in the `-wal`, a restore keeps the state it overwrote, retention prunes only what it made, and an index whose offsets were lost is still worth a snapshot |
@@ -403,7 +404,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-sync.py` | transcript parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/qcut-stats.py` | headless reports |
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 389 tests above |
+| `scripts/tests/` | the 405 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

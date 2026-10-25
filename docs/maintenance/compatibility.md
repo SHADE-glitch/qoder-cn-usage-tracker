@@ -40,7 +40,7 @@ in [`baseline.md`](baseline.md).
 
 - The interactive TUI needs `textual>=8.2,<9` (`requirements.txt`), the only non-stdlib runtime
   dependency. Measured green on `textual 8.2.8`.
-- `test_config.py` and `test_tui.py` need `textual`; the other 13 suites are standard-library
+- `test_config.py` and `test_tui.py` need `textual`; the other 14 suites are standard-library
   only. On a bare interpreter without `textual`, `test_config.py` reports three *errors* — a missing
   package, not a Python-version failure.
 

@@ -174,6 +174,7 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 | suite | cases |
 |---|---:|
 | `test_usage.py` | 72 |
+| `test_cross_repo_golden.py` | 16 |
 | `test_sync.py` | 68 |
 | `test_tui.py` | 74 |
 | `test_stats.py` | 56 |
@@ -188,14 +189,14 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
 | `test_conventions.py` | 9 |
-| **total** | **389** |
+| **total** | **405** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is the bulk of
-the run, the other fourteen together a few seconds.
+the run, the other fifteen together a few seconds.
 
 The suite was green on all three interpreters at the 310-case snapshot, with
 `textual 8.2.8` installed in each — that pair is what the CI matrix pins (floor
-from `requires-python`, plus the highest version measured). The current 389-case
+from `requires-python`, plus the highest version measured). The current 405-case
 suite has been re-run locally on 3.13 (before its last two cases) and 3.14; the
 3.11 row below is an earlier, smaller-suite run, so CI remains the record for
 that end until it is re-measured here:
@@ -206,7 +207,7 @@ that end until it is re-measured here:
 | Python 3.13.14 (the `install.sh` venv) | 387 OK (2026-10-22), 194 s (before the legend and ledger cases) |
 | Python 3.14.4 | 389 OK (2026-10-22), 181 s |
 
-`test_config.py` and `test_tui.py` need `textual`; the other thirteen are
+`test_config.py` and `test_tui.py` need `textual`; the other fourteen are
 stdlib-only.
 Running the suite on a bare interpreter without `textual` gives three *errors* in
 `test_config.py`, because its wiring cases exec `qcut-tui.py` — that is a missing

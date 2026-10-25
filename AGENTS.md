@@ -80,7 +80,7 @@ Single file: `python3 -m unittest discover -s scripts/tests -p 'test_sync.py'`.
 
 **Run the suite with the project venv** (`.venv/bin/python -m unittest …`). Two
 suites need `textual`: `test_tui.py`, and `test_config.py` — its wiring cases
-exec `qcut-tui.py` to prove every setting is read by a renderer. The other thirteen
+exec `qcut-tui.py` to prove every setting is read by a renderer. The other fourteen
 are stdlib-only and run anywhere. That count is checked against `scripts/tests/`
 rather than typed (`test_maintenance_docs.py`), because a suite added later would
 otherwise make this sentence a lie by existing. On a bare interpreter without `textual`, `test_config.py` reports
