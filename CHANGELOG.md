@@ -602,3 +602,26 @@ Evidence L0 2026-10-22: 120x45 -> 160x60 -> 120x20 -> 120x45 on the real index: 
 Cost     One subclass and a private call (`getattr(app, "_fit_dashboard")`) instead of the
          app-level hook; the app no longer knows when its own dashboard was resized.
 Commit   e9cf14d
+
+### D-029 · 2026-10-25 · fix
+Symptom  The agent drill-down disagreed with the tab above it. `q_history(agent)` summed
+         `input_tokens` and `output_tokens` across a run's responses and then applied the
+         "both halves reported" test to the sums, so a response that reports output but not input
+         disappeared into the total instead of contributing nothing: a run of (100/10) and (NULL/30)
+         reported 140 where its rows justify 110. The rest of the family decides Usage Total per
+         row, and the cross-repo golden fixture pins that — only this one query was off.
+Change   The `model_calls` subquery now carries `_AGG_USAGE_TOTAL_EXPR` (SUM of the per-row
+         CASE) and the outer query selects `r.usage_total_tokens` instead of rebuilding the CASE
+         over the column sums. `input_tokens`/`output_tokens` keep their SUMs — those columns show
+         what was reported, and only the total needs the per-row rule.
+Evidence L0 2026-10-25: 406 tests, OK. The new case
+         (`test_a_partly_reported_response_does_not_inflate_a_runs_usage_total`) asserts 110 and
+         2 requests; reverted against the previous query it reports 140. `test_readme_counts`
+         caught the stale 405/72 rows and the README pair plus `docs/maintenance/baseline.md` now
+         carry 406/73.
+Cost     One aggregate expression moves into the subquery; the outer SELECT loses five lines and
+         the drill-down gains one column alias. A run whose responses are all partly reported now
+         shows `—` instead of a number the rows do not support — which is the point, but it does
+         mean fewer runs carry a total than before.
+
+Commit   0098d39
