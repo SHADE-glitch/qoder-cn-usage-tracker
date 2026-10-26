@@ -8,9 +8,10 @@ process-wide audit hook that *refuses* three things:
   included, since the rule is "never opened", not "never written";
 * **reading the real host footprint** — any ``open``, ``os.scandir``/``os.listdir`` (a glob
   reaches the host's files without an ``open``) or ``sqlite3.connect`` under ``~/.qoder-cn``,
-  the dir the reader treats as input. The host is *input*, not state, so a test that reads it
-  stops testing the code and starts testing this machine; every test must build a throwaway
-  host in a temp dir instead;
+  the dir the reader treats as input, or under ``~/.config/qcut``, where the settings file
+  ``load_config()`` opens by default lives. The host is *input*, not state, so a test that
+  reads it stops testing the code and starts testing this machine; every test must build a
+  throwaway host in a temp dir instead;
 * launching one of this repository's entry points in a child process that would resolve the
   real database **or read the real host** — no pinned ``QCUT_DB``/``--db`` and no pinned
   ``QCUT_QODER_DIR``. "Launching" is read from argv, not from the raw text: a ``git``
@@ -37,7 +38,16 @@ PROTECTED = Path.home() / ".local" / "share" / "qoder-cn-usage-tracker" / "usage
 
 # Frozen from the real home at import, deliberately not from qcut_db.QODER_DIR: a test that
 # fakes HOME or QCUT_QODER_DIR must not redefine what counts as the real host.
-PROTECTED_DIRS = (Path.home() / ".qoder-cn",)
+#
+# The settings directory is here for the same reason, one layer up: `load_config()` opens
+# `~/.config/qcut/config.toml` by default, so a test that reaches the loader without pinning
+# QCUT_CONFIG passes on the maintainer's own `log_limit` instead of on the code. Frozen from
+# the real home rather than read from `qcut_db.CONFIG_PATH`, which moves when XDG_CONFIG_HOME
+# or QCUT_CONFIG is set — a test that fakes either must not redefine what is protected.
+PROTECTED_CONFIG_DIR = Path.home() / ".config" / "qcut"
+PROTECTED_DIRS = (Path.home() / ".qoder-cn", PROTECTED_CONFIG_DIR)
+# The variable a test pins to point a child away from each protected directory.
+_PIN_HINTS = {PROTECTED_DIRS[0]: "QCUT_QODER_DIR", PROTECTED_CONFIG_DIR: "QCUT_CONFIG"}
 HOST_ENVS = ("QCUT_QODER_DIR",)
 
 # Anything naming one of these is a child that will reach for the default database unless it
@@ -179,9 +189,10 @@ def _child_would_read_the_real_host(env: dict | None) -> bool:
 def _refuse_host_read(path, how: str) -> None:
     root = _protected_read(path)
     if root is not None:
+        pin = _PIN_HINTS.get(root, "QCUT_QODER_DIR")
         raise Refusal(
             f"a test tried to {how} under the real host footprint {root}. The suite builds "
-            "a throwaway host in a temp directory and points QCUT_QODER_DIR at it — see the "
+            f"a throwaway host in a temp directory and points {pin} at it — see the "
             "'Tests never touch real state' rule in AGENTS.md."
         )
 

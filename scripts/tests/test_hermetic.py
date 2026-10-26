@@ -66,7 +66,10 @@ class PredicateTest(unittest.TestCase):
         from pathlib import Path as P
         expected = P.home() / ".local" / "share" / "qoder-cn-usage-tracker" / "usage.db"
         self.assertEqual(hermetic.PROTECTED, expected)
-        self.assertEqual(hermetic.PROTECTED_DIRS, (P.home() / ".qoder-cn",))
+        # The host input and the settings file: both are opened by default and
+        # both are read by the loader, so both are derived from Path.home().
+        self.assertEqual(hermetic.PROTECTED_DIRS,
+                         (P.home() / ".qoder-cn", P.home() / ".config" / "qcut"))
 
     def test_a_child_with_nothing_to_point_it_away_would_use_the_real_database(self):
         stats = str(SCRIPTS / "qcut-stats.py")
@@ -146,6 +149,22 @@ class EnforcementTest(unittest.TestCase):
             hermetic._hook("os.scandir", (str(root),))
         with self.assertRaises(hermetic.Refusal):
             hermetic._hook("sqlite3.connect", (str(root / "state.db"),))
+
+    def test_reading_the_real_config_file_is_refused(self):
+        """The settings file is host state too: `load_config()` opens it by default.
+
+        The tripwire guarded `~/.qoder-cn` only, so a test that reached the
+        loader without pinning `QCUT_CONFIG` read the maintainer's own
+        `config.toml` and passed on their `log_limit` — the same leak as reading
+        the real transcript directory, one layer up.
+        """
+        config = hermetic.PROTECTED_CONFIG_DIR / "config.toml"
+        self.assertEqual(hermetic._protected_read(str(config)),
+                         hermetic.PROTECTED_CONFIG_DIR)
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("open", (str(config), "r", 0))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("os.listdir", (str(hermetic.PROTECTED_CONFIG_DIR),))
 
     def test_an_ordinary_test_host_is_left_alone(self):
         with tempfile.TemporaryDirectory() as tmp:
