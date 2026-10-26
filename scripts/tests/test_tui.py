@@ -1955,6 +1955,34 @@ class UnifiedControlsTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertNotIn('filter "', str(note.content))
 
+    async def test_a_usage_filter_note_reports_the_match_count_not_the_page(self):
+        """The page is capped at log_limit; the count in the note must not be.
+
+        With a filter applied the note printed len(rows), so a window with 6
+        matches and a 2-row page claimed "2 matches" while the unfiltered branch
+        beside it correctly said "showing 2 of 6 requests" — one page, two
+        numbers for the same fact.
+        """
+        from textual.widgets import Static
+        cfg = dict(QUIET_CFG, log_limit=2)
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=cfg)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await self._tab(app, pilot, "usage")
+            note = app.query_one("#usage-note", Static)
+            self.assertIn("showing 2 of 6 requests", str(note.content))
+            await pilot.press("slash")
+            await pilot.pause()
+            for ch in "builtin":
+                await pilot.press(ch)
+            await pilot.pause()
+            text = str(note.content)
+            self.assertIn('filter "builtin"', text)
+            self.assertIn("showing 2 of 6 matches", text,
+                          "the filter note reported the page size as the match count")
+            await pilot.press("escape")
+            await pilot.pause()
+
     async def test_no_tab_scrolls_when_there_is_nothing_to_scroll(self):
         """The screen itself never scrolls: a root measured two rows taller than
         the terminal let every tab drift on an otherwise empty page."""

@@ -2139,6 +2139,29 @@ _USAGE_LOG_ORDER = {
 }
 
 
+def _usage_log_where(start_ts, end_ts, text):
+    """The WHERE the request log and its count share, so the two cannot drift."""
+    where, params = _where(start_ts, end_ts, "model_calls")
+    if text:
+        like = f"%{text}%"
+        where += (" AND (model LIKE ? OR project LIKE ?"
+                  " OR COALESCE(provider, '') LIKE ?)")
+        params += [like, like, like]
+    return where, params
+
+
+def q_usage_request_log_count(conn, start_ts, end_ts, text=None) -> int:
+    """How many rows the request log *matches*, not how many it shows.
+
+    The log is capped at `log_limit`; a note that counted the loaded page called
+    a 100-row page "100 matches" in a window with fifty thousand of them.
+    """
+    where, params = _usage_log_where(start_ts, end_ts, text)
+    return conn.execute(
+        f"SELECT COUNT(*) FROM model_calls {where}", params
+    ).fetchone()[0]
+
+
 def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
                          text=None, order_by="time"):
     """Per-response rows in the window (never re-parses logs).
@@ -2152,12 +2175,7 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
     for a request that exists below the cut. ``order_by`` is whitelisted for
     the same reason every other order here is.
     """
-    where, params = _where(start_ts, end_ts, "model_calls")
-    if text:
-        like = f"%{text}%"
-        where += (" AND (model LIKE ? OR project LIKE ?"
-                  " OR COALESCE(provider, '') LIKE ?)")
-        params += [like, like, like]
+    where, params = _usage_log_where(start_ts, end_ts, text)
     order = _USAGE_LOG_ORDER.get(order_by, _USAGE_LOG_ORDER["time"])
     return conn.execute(f"""
     SELECT ts, model, provider, session_id, project, message_id,

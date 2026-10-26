@@ -2498,11 +2498,18 @@ class TrackerApp(WideTableMixin, App):
                          "`-` = no data · Usage Total re-adds cache hit "
                          "(already inside Input) · cache miss derived")
             parts.append(f"sort: {sort_label}")
+            # Both branches report matches against the window's own count: the
+            # page is capped at log_limit, so its length is a page size, never
+            # the number of rows the filter matched.
+            matches = (db.q_usage_request_log_count(conn, start, end, text=query)
+                       if query else total)
             if query:
-                parts.append(f'filter "{query}" · {len(rows):,} matches')
-            elif total > len(rows):
+                count = (f"showing {fmt_n(len(rows))} of {fmt_n(matches)} matches"
+                         if matches > len(rows) else f"{fmt_n(len(rows))} matches")
+                parts.append(f'filter "{query}" · {count}')
+            elif matches > len(rows):
                 parts.append(f"showing {fmt_n(len(rows))} of "
-                             f"{fmt_n(total)} requests")
+                             f"{fmt_n(matches)} requests")
             if db.q_token_capture_gap(conn, start, end):
                 parts.append(TOKEN_CAPTURE_HINT)
         self.query_one("#usage-note", Static).update(" · ".join(parts))
