@@ -173,30 +173,30 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 
 | suite | cases |
 |---|---:|
-| `test_usage.py` | 73 |
+| `test_usage.py` | 74 |
 | `test_cross_repo_golden.py` | 16 |
-| `test_sync.py` | 68 |
-| `test_tui.py` | 74 |
-| `test_stats.py` | 56 |
+| `test_sync.py` | 74 |
+| `test_tui.py` | 80 |
+| `test_stats.py` | 59 |
 | `test_config.py` | 19 |
 | `test_snapshots.py` | 14 |
 | `test_format_registry.py` | 10 |
 | `test_maintenance_docs.py` | 11 |
-| `test_hermetic.py` | 13 |
+| `test_hermetic.py` | 14 |
 | `test_privacy.py` | 15 |
 | `test_dispatcher.py` | 9 |
 | `test_readme_bilingual.py` | 7 |
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
 | `test_conventions.py` | 9 |
-| **total** | **406** |
+| **total** | **423** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is the bulk of
 the run, the other fifteen together a few seconds.
 
 The suite was green on all three interpreters at the 310-case snapshot, with
 `textual 8.2.8` installed in each — that pair is what the CI matrix pins (floor
-from `requires-python`, plus the highest version measured). The current 406-case
+from `requires-python`, plus the highest version measured). The current 423-case
 suite has been re-run locally on 3.13 (before its last two cases) and 3.14; the
 3.11 row below is an earlier, smaller-suite run, so CI remains the record for
 that end until it is re-measured here:
