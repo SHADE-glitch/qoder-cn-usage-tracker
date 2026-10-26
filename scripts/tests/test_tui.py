@@ -1405,6 +1405,44 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(top.heading, "(no project)")
             self.assertEqual(self._table(app, "project-table").row_count, 1)
 
+    async def test_a_session_with_no_id_opens_as_a_session_not_as_an_agent_run(self):
+        """A NULL session id is a real group, not an Agent run.
+
+        The drill-down picked its query with `session_id is not None`, so a
+        session row whose id was NULL fell into the agent branch: it asked for a
+        run keyed by `None` and answered "this run has no indexed requests". The
+        branch now keys off `agent_call_id`, and the session queries match the
+        NULL id with `IS` so the group's own requests are found.
+        """
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, has_usage)"
+            " VALUES('m-nosession',NULL,'/work/demo',?, 'qfmodel','builtin',"
+            " 7, 3, 1)", (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            row = self._row_index(app, "dash-projects", "project\t/work/demo")
+            await self._open(app, pilot, "dash-projects", row=row)
+            row = self._row_index(app, "project-table", "session\tNone")
+            await self._open(app, pilot, "project-table", row=row)
+            top = app.screen
+            self.assertIsInstance(
+                top, TUI.RequestsScreen,
+                f"a session row opened {type(top).__name__}: "
+                f"{[type(s).__name__ for s in app.screen_stack]}")
+            self.assertIsNone(top.session_id)
+            self.assertIsNone(top.agent_call_id)
+            self.assertEqual(top.heading, "(no session id)")
+            self.assertEqual(self._table(app, "req-table").row_count, 1,
+                             "the NULL session's own request is missing")
+            head = str(top.query_one("#req-head").content)
+            self.assertIn("1 request", head)
+
     async def test_the_dashboard_project_counter_matches_the_board(self):
         """The counter and the board must be the same ledger.
 

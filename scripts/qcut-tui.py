@@ -1436,7 +1436,8 @@ class ProjectScreen(WideTableMixin, Screen):
             return
         if 0 <= index < len(self._session_ids):
             self.app.push_screen(RequestsScreen(
-                self._session_ids[index], session_id=self._session_ids[index],
+                self._session_ids[index] or "(no session id)",
+                session_id=self._session_ids[index],
                 start_ts=self.start_ts, end_ts=self.end_ts,
                 window_label=self.window_label))
 
@@ -1479,16 +1480,20 @@ class RequestsScreen(WideTableMixin, Screen):
             table.cursor_type = "row"
             table.add_columns(*cols)
         conn = self.app.conn
-        if self.session_id is not None:
+        # The run branch needs the Agent call id, so that is what selects it. A
+        # session whose own id is NULL is still a session: keying the branch off
+        # `session_id is not None` sent it to the run queries, which then found
+        # nothing and reported a session's requests as a run that never existed.
+        if self.agent_call_id is not None:
+            summary = db.q_agent_run_summary(conn, self.agent_call_id)
+            rows = db.q_agent_run_calls(conn, self.agent_call_id,
+                                        limit=self.app.cfg["detail_limit"])
+        else:
             summary = db.q_session_summary(conn, self.session_id,
                                           self.start_ts, self.end_ts)
             rows = db.q_session_calls(conn, self.session_id, self.start_ts,
                                       self.end_ts,
                                       limit=self.app.cfg["detail_limit"])
-        else:
-            summary = db.q_agent_run_summary(conn, self.agent_call_id)
-            rows = db.q_agent_run_calls(conn, self.agent_call_id,
-                                        limit=self.app.cfg["detail_limit"])
         total = summary["requests"] or 0
         head = [f"[b]requests: {self.heading}[/b]  ·  window: {self.window_label}",
                 f"  {count_n(total, 'request')}"

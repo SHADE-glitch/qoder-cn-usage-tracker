@@ -1853,7 +1853,8 @@ def q_project_sessions(conn, project, start_ts=None, end_ts=None,
 def q_session_calls(conn, session_id, start_ts=None, end_ts=None, limit=200):
     """The newest responses in one session, with the agent that launched each."""
     where, params = _where(start_ts, end_ts, "m")
-    where = (where + " AND " if where else "WHERE ") + "m.session_id = ?"
+    # See q_session_summary: `IS` so the NULL-id group is reachable.
+    where = (where + " AND " if where else "WHERE ") + "m.session_id IS ?"
     return conn.execute(f"""
     SELECT m.ts, m.model, m.provider, m.credits,
            m.input_tokens, m.output_tokens, m.cache_read_tokens,
@@ -1874,7 +1875,9 @@ def q_session_calls(conn, session_id, start_ts=None, end_ts=None, limit=200):
 def q_session_summary(conn, session_id, start_ts=None, end_ts=None):
     """Totals for every response in one session, not only the shown tail."""
     where, params = _where(start_ts, end_ts, "m")
-    where = (where + " AND " if where else "WHERE ") + "m.session_id = ?"
+    # `IS`, not `=`: a session whose id is NULL is a real group (a transcript
+    # that never carried one), and `= NULL` matches no row at all.
+    where = (where + " AND " if where else "WHERE ") + "m.session_id IS ?"
     return _request_summary(conn, where, params + [session_id])
 
 
