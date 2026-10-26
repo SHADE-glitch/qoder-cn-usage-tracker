@@ -328,9 +328,6 @@ HISTORY_COLUMNS = {
     "agent": ("when", "agent", "status", "duration", "requests",
               "usage total", "input", "output", "cache hit",
               "cache write", "credits", "peak ctx", "project", "session"),
-    "model": ("when", "model", "provider", "usage total", "credits", "input",
-              "output", "cache hit", "cache miss", "cache write",
-              "stop"),
     "mcp": ("when", "server", "tool", "status", "duration", "session"),
 }
 # Twelve columns need ~180 cells: on an 80-wide terminal most of this table used
@@ -1288,9 +1285,7 @@ class HistoryScreen(WideTableMixin, Screen):
         table_rows, call_ids = [], []
         for r in rows:
             status = r["status"] or "pending"
-            if self.kind == "model":
-                table_rows.append(self._model_row(r))
-            elif self.kind == "tool":
+            if self.kind == "tool":
                 table_rows.append([ts(r["ts"]), r["name"], r["category"], status,
                                    ms(r["duration_ms"]), r["project"] or "-",
                                    r["session_id"] or "-"])
@@ -1303,7 +1298,7 @@ class HistoryScreen(WideTableMixin, Screen):
                 table_rows.append([
                     ts(r["ts"]), r["name"], status, ms(r["duration_ms"]),
                     fmt_n(r["requests"]),
-                    fmt_tok(self._usage_total(r), rep),
+                    fmt_tok(r["usage_total_tokens"], rep),
                     fmt_tok(r["input_tokens"], rep),
                     fmt_tok(r["output_tokens"], rep),
                     fmt_tok(r["cache_read_tokens"], rep),
@@ -1322,24 +1317,6 @@ class HistoryScreen(WideTableMixin, Screen):
         self._fill_wide("hist-table", table_rows, "no calls in this window",
                         key_index=0, key_kind=self.kind,
                         key_rows=[[cid] for cid in call_ids])
-
-    @staticmethod
-    def _model_row(r):
-        rep = db.row_reports_tokens(r)
-        return [ts(r["ts"]), r["model"], db.provider_label(r["provider"]),
-                fmt_tok(r["usage_total_tokens"], rep),
-                fmt_credits(r["credits"]),
-                fmt_tok(r["input_tokens"], rep), fmt_tok(r["output_tokens"], rep),
-                fmt_tok(r["cache_read_tokens"], rep),
-                fmt_tok(r["cache_miss_tokens"], rep),
-                fmt_tok(r["cache_creation_tokens"], rep),
-                r["stop_reason"] or "-"]
-
-    @staticmethod
-    def _usage_total(r):
-        if r["input_tokens"] is None or r["output_tokens"] is None:
-            return None
-        return r["input_tokens"] + r["output_tokens"] + (r["cache_read_tokens"] or 0)
 
     def on_data_table_row_selected(self, event) -> None:
         if event.data_table.id != "hist-table":
@@ -2414,9 +2391,6 @@ class TrackerApp(WideTableMixin, App):
                          else NULL_PROJECT_KEY])
         self._fill_wide("dash-projects", out, EMPTY_MSG["projects"],
                         key_index=0, key_kind="project", key_rows=keys)
-
-    # Block characters for the per-day sparkline (index 0 = no activity).
-    _SPARK = " ▁▂▃▄▅▆▇█"
 
     # --- Usage page --------------------------------------------------------
 

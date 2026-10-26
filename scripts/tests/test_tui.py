@@ -1362,6 +1362,36 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("1 request", head)
             self.assertIn("42.0%", head)
 
+    async def test_a_runs_history_row_uses_the_per_response_usage_total(self):
+        """The run's table row and its head must be the same number.
+
+        `_usage_total` re-derived the total from the row's *summed* columns, so
+        a run of (30/3) and (NULL/40) printed 73 — the sum the columns happen to
+        justify — while the head, the Agents tab and the CLI all print 33. The
+        row now reads the per-response total the query already computes.
+        """
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO model_calls(message_id, session_id, project, ts, model,"
+            " provider, input_tokens, output_tokens, parent_call_id,"
+            " is_sidechain, has_usage) VALUES('m-partly','s1','/work/demo',?,"
+            " 'qfmodel','builtin', NULL, 40, 'c4', 1, 1)",
+            (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "agents")
+            row = self._row_index(app, "agents-table", "agent\tExplore")
+            await self._open(app, pilot, "agents-table", row=row)
+            self.assertIsInstance(app.screen, TUI.HistoryScreen)
+            self.assertEqual(self._table(app, "hist-table").row_count, 1)
+            hist = row_map(self._table(app, "hist-table"), "c4")
+            self.assertEqual(hist["requests"], "2")
+            self.assertEqual(hist["usage total"], "33",
+                             "the row summed the columns instead of the rows")
+
     async def test_the_dashboard_project_board_opens_its_session_ledger(self):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         async with app.run_test(size=(140, 40)) as pilot:

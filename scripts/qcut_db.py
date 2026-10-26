@@ -2255,53 +2255,6 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
     """, params + [limit, offset]).fetchall()
 
 
-def q_usage_daily(conn, start_ts=None, end_ts=None):
-    """Per-local-day call and credit totals, oldest first (sparkline input)."""
-    where, params = _where(start_ts, end_ts, "model_calls")
-    rows = conn.execute(f"""
-    SELECT ts, COALESCE(credits,0) AS credits FROM model_calls {where}
-    """, params).fetchall()
-    buckets = {}
-    for row in rows:
-        day = datetime.fromtimestamp(row["ts"] / 1000).strftime("%Y-%m-%d")
-        b = buckets.setdefault(day, {"day": day, "calls": 0, "credits": 0.0})
-        b["calls"] += 1
-        b["credits"] += row["credits"]
-    return [buckets[k] for k in sorted(buckets)]
-
-
-def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
-    """How the builtin tool calls in the window behaved (the Runtime panel).
-
-    Restricted to ``category='builtin'`` so Completed + Failed + Pending is the
-    same population as the Dashboard's "Tool calls" KPI; skills, agent runs and
-    MCP calls carry their own status columns on their tabs. ``completed`` and
-    ``incomplete`` split the ``calls`` total exactly: Qoder leaves a call without
-    a status when its paired ``tool_result`` never arrived, which is a fact about
-    the transcript, not about the tool. ``avg_ms`` averages only the calls that
-    reported a duration (NULL when nothing ran, never a fabricated 0);
-    ``sessions``/``projects`` are DISTINCT ids.
-    """
-    where, params = _where(start_ts, end_ts, "tool_calls")
-    where = (where + " AND " if where else "WHERE ") + "category = 'builtin'"
-    row = conn.execute(f"""
-    SELECT COUNT(*) AS calls,
-           SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-           SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS failed,
-           SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS pending,
-           SUM(CASE WHEN status = 'backgrounded' THEN 1 ELSE 0 END) AS backgrounded,
-           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
-           SUM(CASE WHEN status IS NULL OR status <> 'completed' THEN 1 ELSE 0 END)
-               AS incomplete,
-           CAST(AVG(CASE WHEN status IS NOT NULL THEN duration_ms END) AS INTEGER)
-               AS avg_ms,
-           COUNT(DISTINCT session_id) AS sessions,
-           COUNT(DISTINCT project) AS projects
-    FROM tool_calls {where}
-    """, params).fetchone()
-    return dict(row)
-
-
 def overview(conn) -> dict:
     """Row counts for every indexed table — what `qcut health` prints."""
     out = {}

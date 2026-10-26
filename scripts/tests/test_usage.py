@@ -6,6 +6,7 @@ here points at the storage layer and nowhere else.
 
 from __future__ import annotations
 
+import ast
 import unittest
 from datetime import datetime, timedelta
 
@@ -543,11 +544,12 @@ class QueryTest(unittest.TestCase):
         self.assertNotIn("credits_only", rows[("qfmodel", "builtin")])
         self.assertEqual(rows[("ark-code-latest", "Volcano ARK")]["token_covered"], 1)
 
-    def test_runtime_counts_only_builtin_calls(self):
-        """Completed + Failed + Pending must equal the Dashboard's Tool calls.
+    def test_the_builtin_call_count_excludes_skills_and_counts_cancelled(self):
+        """The KPI counts builtin calls, not every row in `tool_calls`.
 
-        A Skill/Agent/MCP row lives in `tool_calls` too; counting it here made
-        the Runtime panel add up to more than the KPI beside it.
+        A Skill/Agent/MCP row lives in `tool_calls` too, so counting the table
+        made the Dashboard's "Tool calls" larger than the tools it summarises.
+        A cancelled call still counts: it happened.
         """
         conn = self.t.conn()
         conn.executemany(
@@ -557,16 +559,11 @@ class QueryTest(unittest.TestCase):
              ("c10", "s1", "/a", ms_on(0), "Bash", "builtin", 10, "cancelled")])
         conn.commit()
         try:
-            act = db.q_usage_activity(conn)
             kpi = db.q_usage_kpi(conn)
         finally:
             conn.close()
-        self.assertEqual(act["calls"], 4)
-        self.assertEqual(act["calls"], kpi["builtin_tool_calls"])
-        self.assertEqual(
-            act["completed"] + act["failed"] + act["pending"]
-            + act["backgrounded"] + act["cancelled"], act["calls"],
-            "the five Runtime statuses must partition the builtin calls")
+        self.assertEqual(kpi["builtin_tool_calls"], 4,
+                         "the skill row must not count; the cancelled call must")
 
     def test_a_server_less_mcp_row_is_not_dropped(self):
         """`m.server = p.server` is never true when both are NULL, which once
@@ -750,15 +747,6 @@ class QueryTest(unittest.TestCase):
                        "status", "category", "is_sidechain"):
             self.assertIn(column, row.keys())
 
-    def test_daily_buckets_are_local_days(self):
-        conn = self.t.conn()
-        try:
-            days = db.q_usage_daily(conn, None, ms_on(0, 23))
-        finally:
-            conn.close()
-        self.assertEqual(len(days), 2)
-        self.assertEqual(sum(d["calls"] for d in days), 3)
-
     def test_skills_show_their_plugin_owner(self):
         conn = self.t.conn()
         try:
@@ -772,6 +760,39 @@ class QueryTest(unittest.TestCase):
             conn.close()
         self.assertIsNone(rows["playwright-cli"]["plugin"])
         self.assertEqual(rows["owned-thing"]["plugin"], "demo-plugin")
+
+
+class DeadQueryTest(unittest.TestCase):
+    """A query nothing outside the tests calls is code the suite is feeding.
+
+    `q_usage_daily` and `q_usage_activity` outlived the Dashboard panels they
+    were written for — the per-day sparkline and the Runtime row — and the only
+    thing keeping them alive was their own test. Removing them is a one-off;
+    this guard is what stops the next withdrawn panel from leaving its query
+    behind, which is the failure mode a passing test hides.
+    """
+
+    PRODUCTION = ("qcut_db.py", "qcut-tui.py", "qcut-sync.py", "qcut-stats.py")
+
+    def test_every_public_query_has_a_caller_outside_the_tests(self):
+        body = ast.parse((SCRIPTS / "qcut_db.py").read_text(encoding="utf-8"))
+        declared = {node.name for node in body.body
+                    if isinstance(node, ast.FunctionDef)
+                    and node.name.startswith("q_")}
+        self.assertTrue(declared, "no q_* queries found — the scan is looking at the wrong file")
+        used = set()
+        for name in self.PRODUCTION:
+            tree = ast.parse((SCRIPTS / name).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                # `db.q_x(...)` is an Attribute, a call inside qcut_db.py a Name;
+                # a def's own name is neither, so it cannot count as its own caller.
+                if isinstance(node, ast.Name):
+                    used.add(node.id)
+                elif isinstance(node, ast.Attribute):
+                    used.add(node.attr)
+        orphans = sorted(declared - used)
+        self.assertEqual(orphans, [],
+                         "queries with no caller outside the tests: " + ", ".join(orphans))
 
 
 class CliReportTest(unittest.TestCase):
