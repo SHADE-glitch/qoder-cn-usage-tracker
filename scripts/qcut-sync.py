@@ -756,19 +756,27 @@ def _handle_record(conn, rec, providers, skill_owner, fallback_project, counts) 
         if rec.get("subtype") == COMPACT_SUBTYPE:
             _record_compaction(conn, rec, ts, project, counts)
     elif rtype == "runtime-config":
+        # An UPSERT, not an UPDATE: a live transcript puts these two records
+        # *before* the first `assistant` one, which is what creates the row. An
+        # UPDATE then matched nothing, the model was lost, and no later run could
+        # recover it — the offset had already passed the record.
         sid = rec.get("sessionId")
         model = rec.get("model")
         if sid and model:
             conn.execute(
-                "UPDATE sessions SET model = COALESCE(?, model) WHERE session_id = ?",
-                (model, sid))
+                "INSERT INTO sessions(session_id, model) VALUES(?, ?)"
+                " ON CONFLICT(session_id) DO UPDATE"
+                " SET model = COALESCE(excluded.model, sessions.model)",
+                (sid, model))
     elif rtype == "workspace-directories":
         sid = rec.get("sessionId")
         dirs = rec.get("directories")
         if sid and isinstance(dirs, list) and dirs:
             conn.execute(
-                "UPDATE sessions SET project = COALESCE(project, ?) WHERE session_id = ?",
-                (dirs[0] if isinstance(dirs[0], str) else None, sid))
+                "INSERT INTO sessions(session_id, project) VALUES(?, ?)"
+                " ON CONFLICT(session_id) DO UPDATE"
+                " SET project = COALESCE(sessions.project, excluded.project)",
+                (sid, dirs[0] if isinstance(dirs[0], str) else None))
 
 
 # --- file indexing ---------------------------------------------------------

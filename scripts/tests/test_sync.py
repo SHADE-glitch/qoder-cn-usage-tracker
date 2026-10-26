@@ -915,6 +915,45 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(row["version"], "1.1.57")
         self.assertLess(row["started_at"], row["ended_at"])
 
+    def test_a_session_opened_by_a_runtime_config_keeps_its_model(self):
+        """The real transcript order puts the session's own records first.
+
+        A live file opens with `runtime-config` (the model) and
+        `workspace-directories` (the project) before the first `assistant`
+        record creates the row. Both handlers were UPDATEs, so on a session the
+        indexer had not seen yet they matched no row and the model was dropped —
+        and a second run could not recover it, because the offsets were already
+        past those records.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            {"type": "runtime-config", "sessionId": "s1", "cwd": "/work/demo",
+             "timestamp": "2026-10-01T09:59:00.000Z", "model": "qfmodel"},
+            {"type": "workspace-directories", "sessionId": "s1",
+             "timestamp": "2026-10-01T09:59:30.000Z",
+             "directories": ["/work/demo"]},
+            assistant("s1", "m1", usage=usage(input_tokens=1),
+                      ts="2026-10-01T10:00:00.000Z", cwd="/work/demo"),
+            assistant("s1", "m2", usage=usage(input_tokens=1),
+                      ts="2026-10-01T10:01:00.000Z", cwd="/work/demo"),
+        ])
+        self.t.sync()
+        row = self.t.one("SELECT * FROM sessions")
+        self.assertEqual(row["session_id"], "s1")
+        self.assertEqual(row["model"], "qfmodel")
+        self.assertEqual(row["project"], "/work/demo")
+        self.assertIsNotNone(row["started_at"])
+
+    def test_a_session_that_only_opened_is_still_recorded(self):
+        """A file whose first record is the only one indexed so far — the
+        runtime-config row is a fact about the session, not a comment on one."""
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            {"type": "runtime-config", "sessionId": "s1",
+             "timestamp": "2026-10-01T09:59:00.000Z", "model": "qfmodel"},
+        ])
+        self.t.sync()
+        self.assertEqual(self.t.one("SELECT model FROM sessions")["model"],
+                         "qfmodel")
+
     def test_a_subagent_transcript_shares_its_parent_session(self):
         """120 of 157 files here are `agent-a<Type>-<hash>.jsonl` carrying the
         parent's sessionId — they must not create a session per file."""
