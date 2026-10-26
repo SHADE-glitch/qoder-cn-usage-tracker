@@ -1362,6 +1362,34 @@ class LedgerDrilldownTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("1 request", head)
             self.assertIn("42.0%", head)
 
+    async def test_an_mcp_admin_row_says_it_has_no_server_to_open(self):
+        """The `(admin)` row is keyed (NULL, NULL), and Enter used to do nothing.
+
+        `if not server: return` swallowed the key press, so a row that looks
+        selectable like every other one was silently inert. It now says why it
+        cannot open anything.
+        """
+        conn = self.t.conn()
+        conn.execute(
+            "INSERT INTO mcp_usage(call_id, server, tool, admin_op, session_id,"
+            " project, ts, status) VALUES('c-admin',NULL,NULL,'list','s1',"
+            " '/work/demo',?, 'completed')",
+            (int(datetime.now().timestamp() * 1000),))
+        conn.commit()
+        conn.close()
+
+        app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await self._tab(app, pilot, "mcp")
+            row = self._row_index(app, "mcp-table", "mcp\t\t")
+            with mock.patch.object(TUI.TrackerApp, "notify") as notify:
+                depth = len(app.screen_stack)
+                await self._open(app, pilot, "mcp-table", row=row)
+                self.assertEqual(len(app.screen_stack), depth,
+                                 "an admin row pushed a screen with no server")
+                self.assertTrue(notify.called, "Enter on an admin row did nothing")
+                self.assertIn("admin", str(notify.call_args))
+
     async def test_a_runs_history_row_uses_the_per_response_usage_total(self):
         """The run's table row and its head must be the same number.
 

@@ -2917,6 +2917,10 @@ class TrackerApp(WideTableMixin, App):
             # Both query by the server, because q_history maps mcp to that column.
             server, _, tool = rest.partition("\t")
             if not server:
+                # An admin operation is keyed (NULL, NULL): it has no server to
+                # open, and returning here made the row silently inert while
+                # every neighbouring row responded to the same key press.
+                self.notify("This row is an MCP admin operation — no server to open")
                 return
             if tool:
                 self.push_screen(HistoryScreen(
