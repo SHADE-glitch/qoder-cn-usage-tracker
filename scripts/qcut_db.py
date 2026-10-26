@@ -368,11 +368,17 @@ CREATE TABLE IF NOT EXISTS sync_state (
 
 -- Records the indexer saw but could not use: an unknown ``type`` discriminator
 -- (the usual sign Qoder's log format changed) or a complete line that is not
--- JSON. Accumulated, because a run that silently claims nothing still prints
--- "done" — the count is what turns a format change into something visible.
+-- JSON. A run that silently claims nothing still prints "done" — the count is
+-- what turns a format change into something visible.
+--
+-- Keyed by (reason, source) and *replaced* per transcript, because a rewritten
+-- file is re-read from offset 0: a counter that only ever added doubled every
+-- reason in it, and a doubled diagnostic is not a diagnostic.
 CREATE TABLE IF NOT EXISTS unparsed (
-    reason TEXT PRIMARY KEY,       -- "type:<name>" | "type:<missing>" | "unparseable_line"
-    count  INTEGER NOT NULL DEFAULT 0
+    reason TEXT NOT NULL,          -- "type:<name>" | "type:<missing>" | "unparseable_line"
+    source TEXT NOT NULL DEFAULT '',  -- the transcript file that carried them
+    count  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (reason, source)
 );
 """
 
@@ -813,6 +819,19 @@ def _repair_v3(conn: sqlite3.Connection) -> None:
         )
 
 
+def _drop_legacy_unparsed(conn) -> None:
+    """Drop a v1-v3 unparsed counter so TABLES_SQL recreates it with its source.
+
+    The old table keys by reason alone, and SQLite cannot widen a primary key,
+    so the counter has to be rebuilt. Its rows name no file, so they cannot be
+    carried over honestly: the next sync re-derives them per transcript.
+    """
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(unparsed)")]
+    if not columns or "source" in columns:
+        return
+    conn.execute("DROP TABLE unparsed")
+
+
 def ensure_schema(conn: sqlite3.Connection) -> str:
     """Create or widen the schema. Idempotent, and safe on a live install.
 
@@ -822,6 +841,7 @@ def ensure_schema(conn: sqlite3.Connection) -> str:
     guard one call away from the writes is a guard that can be skipped.
     """
     current = check_version(conn)
+    _drop_legacy_unparsed(conn)
     conn.executescript(TABLES_SQL)
     # Kept out of TABLES_SQL: CREATE INDEX on a v1 file would run before the
     # columns exist and fail the whole upgrade.
@@ -874,19 +894,32 @@ def reset(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def note_unparsed(conn: sqlite3.Connection, reason: str, n: int) -> None:
-    conn.execute(
-        "INSERT INTO unparsed(reason, count) VALUES(?, ?) "
-        "ON CONFLICT(reason) DO UPDATE SET count = count + excluded.count",
-        (reason, n),
+def note_unparsed(conn: sqlite3.Connection, source: str, counts) -> None:
+    """Replace one transcript's unclaimed-record counts.
+
+    ``source`` is the file they came from, and its rows are deleted first: a
+    rewritten transcript is re-read from the start, so the same reasons arrive
+    again and adding them would double the count. A reason that stopped
+    occurring also disappears, which is what makes a *drop* readable as a fix.
+    """
+    conn.execute("DELETE FROM unparsed WHERE source = ?", (source,))
+    conn.executemany(
+        "INSERT INTO unparsed(reason, source, count) VALUES(?,?,?)",
+        [(reason, source, n) for reason, n in counts.items()],
     )
 
 
 def q_unparsed(conn: sqlite3.Connection):
-    """Unclaimed-record counts. Empty (not an error) on an unbuilt schema."""
+    """Unclaimed-record counts per reason, summed across files.
+
+    Empty (not an error) on an unbuilt schema. One line per reason rather than
+    per file: the report answers "did the format move", and a hundred rows of
+    the same reason would bury that.
+    """
     try:
         return conn.execute(
-            "SELECT reason, count FROM unparsed ORDER BY count DESC"
+            "SELECT reason, SUM(count) AS count FROM unparsed"
+            " GROUP BY reason ORDER BY count DESC"
         ).fetchall()
     except sqlite3.OperationalError:
         return []

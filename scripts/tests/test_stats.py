@@ -190,7 +190,8 @@ def seed_db(path):
          ("mcp", "node-repl", None, None, None, "user"),
          ("mcp", "idle-server", None, None, None, "user"),
          ("command", "compact", None, None, None, "builtin")])
-    conn.execute("INSERT INTO unparsed(reason, count) VALUES('type:NewThing', 3)")
+    conn.execute("INSERT INTO unparsed(reason, source, count)"
+                 " VALUES('type:NewThing', '/work/demo/s1.jsonl', 3)")
     conn.execute("INSERT INTO sync_state(file_path, size, mtime, offset)"
                  " VALUES('/work/demo/s1.jsonl', 1, 1.0, 1)")
     conn.commit()
@@ -506,7 +507,9 @@ class StatsReportTest(unittest.TestCase):
                          "export gained or dropped a table")
         self.assertEqual(len(data["tool_calls"]), 4)
         self.assertEqual([r["tool_name"] for r in data["tool_calls"]].count("Bash"), 2)
-        self.assertEqual(data["unparsed"], [{"reason": "type:NewThing", "count": 3}])
+        self.assertEqual(data["unparsed"],
+                         [{"reason": "type:NewThing",
+                           "source": "/work/demo/s1.jsonl", "count": 3}])
         self.assertEqual(len(data["inventory"]), 9)
         self.assertEqual(data["sessions"][0]["session_id"], "s1")
 

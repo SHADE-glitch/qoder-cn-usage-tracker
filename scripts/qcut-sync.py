@@ -219,6 +219,12 @@ MISSING_TYPE = "type:<missing>"
 # A transcript the run could not open. Named because it is a reason an operator
 # reads: it must never be confused with a file that was read and understood.
 UNREADABLE_FILE = "unreadable_file"
+# The keys in a run's counts that name an indexed table rather than an unclaimed
+# record: they describe what was written, so they are never unparsed reasons.
+INDEXED_KEYS = frozenset({
+    "model_calls", "tool_calls", "tool_results", "skill_calls", "agent_calls",
+    "mcp_calls", "commands", "compactions",
+})
 # Keys of dicts *qcut* builds and reads: its `sync_state` columns, its
 # inventory-side plugin→skill map, and `run()`'s result. They are listed because
 # the format mirror cannot tell an upstream dependency from an internal key by
@@ -240,7 +246,14 @@ QCUT_INTERNAL_KEYS = frozenset({
 
 
 def _bump(counts: dict, key: str, n: int = 1) -> None:
-    counts[key] = counts.get(key, 0) + n
+    """Add to one counter. A zero adds nothing — and creates no key.
+
+    The writers pass a cursor's rowcount, which is 0 when INSERT OR IGNORE found
+    the row already there; a key that appears with 0 would read as "this pass
+    touched tool calls" in the summary.
+    """
+    if n:
+        counts[key] = counts.get(key, 0) + n
 
 
 def _load_json(path: Path):
@@ -591,7 +604,7 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
     sid = rec.get("sessionId")
     side = 1 if rec.get("isSidechain") else 0
 
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT OR IGNORE INTO tool_calls(
             call_id, session_id, project, tool_name, category, ts, duration_ms,
@@ -600,7 +613,9 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
         """,
         (call_id, sid, project, name, category, ts, side),
     )
-    _bump(counts, "tool_calls")
+    # rowcount, not "a record was seen": a re-read file re-states every call it
+    # holds, and the summary must report what this pass *added*.
+    _bump(counts, "tool_calls", cur.rowcount)
 
     if category == "skill":
         reported = payload or ""
@@ -611,13 +626,13 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
             if prefix and bare:
                 plugin, skill = prefix, bare
         plugin = plugin or skill_owner.get(skill)
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO skill_usage"
             "(call_id, skill, plugin, session_id, project, ts, status, duration_ms)"
             " VALUES(?,?,?,?,?,?,NULL,NULL)",
             (call_id, skill, plugin, sid, project, ts),
         )
-        _bump(counts, "skill_calls")
+        _bump(counts, "skill_calls", cur.rowcount)
         if plugin:
             conn.execute(
                 "INSERT OR IGNORE INTO plugin_usage(call_id, plugin, marketplace,"
@@ -626,23 +641,23 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
                 (call_id, plugin, None, "skill", skill, sid, project, ts),
             )
     elif category == "agent":
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO agent_usage"
             "(call_id, agent_type, session_id, project, ts, status, duration_ms)"
             " VALUES(?,?,?,?,?,NULL,NULL)",
             (call_id, payload, sid, project, ts),
         )
-        _bump(counts, "agent_calls")
+        _bump(counts, "agent_calls", cur.rowcount)
     elif category == "mcp_tool":
         op, target = payload
         server, tool = _split_mcp_target(target)
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO mcp_usage"
             "(call_id, server, tool, admin_op, session_id, project, ts, status, duration_ms)"
             " VALUES(?,?,?,?,?,?,?,NULL,NULL)",
             (call_id, server, tool, op, sid, project, ts),
         )
-        _bump(counts, "mcp_calls")
+        _bump(counts, "mcp_calls", cur.rowcount)
 
 
 def _record_tool_result(conn, rec, block, ts, project, counts) -> None:
@@ -709,12 +724,12 @@ def _record_commands(conn, rec, msg, ts, project, counts) -> None:
             continue
         m = CMD_RE.search(text)
         if m:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO commands(command, session_id, project, ts)"
                 " VALUES(?,?,?,?)",
                 (m.group(1), rec.get("sessionId"), project, ts),
             )
-            _bump(counts, "commands")
+            _bump(counts, "commands", cur.rowcount)
 
 
 def _handle_record(conn, rec, providers, skill_owner, fallback_project, counts) -> None:
@@ -859,6 +874,20 @@ def _starts_on_line_boundary(path: Path, offset: int) -> bool:
         if before == TRANSCRIPT_LINE_SEP:
             return True
         return fh.read(1) == TRANSCRIPT_LINE_SEP
+
+
+def _record_counts(conn, path: Path, file_counts: dict, totals: dict) -> None:
+    """Fold one transcript's pass into the run total and into the counter.
+
+    The counter is replaced per file (see `db.note_unparsed`), while `totals` is
+    the run's own sum and is only ever printed — so a re-read file re-states its
+    counts instead of adding a second copy of them.
+    """
+    unclaimed = {reason: n for reason, n in file_counts.items()
+                 if reason not in INDEXED_KEYS}
+    db.note_unparsed(conn, str(path), unclaimed)
+    for reason, n in file_counts.items():
+        _bump(totals, reason, n)
 
 
 def _needs_reset(path: Path, st, row) -> bool:
@@ -1006,22 +1035,21 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             if not _starts_on_line_boundary(path, offset):
                 offset = 0
         fallback = _decode_project(path.parent.name)
+        # This file's own pass, then folded into the run total. The split is what
+        # lets the unclaimed counter be *replaced* per source: the same records
+        # arrive again whenever a transcript is rewritten and re-read.
+        file_counts: dict = {}
         try:
             new_offset = index_file(conn, path, offset, providers, skill_owner,
-                                    fallback, counts)
+                                    fallback, file_counts)
         except OSError:
-            _bump(counts, UNREADABLE_FILE)
-            continue
-        conn.execute(
-            "INSERT OR REPLACE INTO sync_state(file_path, size, mtime, offset)"
-            " VALUES(?,?,?,?)", (key, st.st_size, st.st_mtime, new_offset))
-        scanned += 1
-
-    for reason, n in counts.items():
-        if reason in ("model_calls", "tool_calls", "tool_results", "skill_calls",
-                      "agent_calls", "mcp_calls", "commands", "compactions"):
-            continue
-        db.note_unparsed(conn, reason, n)
+            _bump(file_counts, UNREADABLE_FILE)
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_state(file_path, size, mtime, offset)"
+                " VALUES(?,?,?,?)", (key, st.st_size, st.st_mtime, new_offset))
+            scanned += 1
+        _record_counts(conn, path, file_counts, counts)
     conn.commit()
 
     summary = {

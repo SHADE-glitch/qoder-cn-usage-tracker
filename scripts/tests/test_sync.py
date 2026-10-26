@@ -1012,6 +1012,42 @@ class CrashSafetyTest(unittest.TestCase):
             self.assertEqual(fh.read(1), b"\n")
 
 
+    def test_a_rewritten_transcript_does_not_double_count(self):
+        """A same-length rewrite is re-read from offset 0 — every record in it
+        is seen a second time.
+
+        The unclaimed counter is persistent and only ever added, so one rewrite
+        doubled it; the run summary counted every tool call again even though
+        INSERT OR IGNORE had added nothing. Both now say what the pass actually
+        found: the counter is replaced per source file, and a call counts only
+        when a row appeared.
+        """
+        path = self.t.write("projects/-work-demo/s1.jsonl", [
+            {"type": "brand-new-type", "sessionId": "s1",
+             "timestamp": "2026-10-01T10:00:00.000Z"},
+            assistant("s1", "m1", content=[tool_use("c1", "Bash", command="ls")],
+                      usage=usage(input_tokens=1)),
+        ])
+        first = self.t.sync()
+        self.assertEqual(first["counts"].get("tool_calls"), 1, first["counts"])
+        self.assertEqual(self.unclaimed("type:brand-new-type"), 1)
+        # Same bytes, newer mtime: the CLI rewrote the file instead of appending.
+        # os.utime rather than a second write, so the reset does not depend on
+        # how fast this machine timestamps two writes.
+        st = path.stat()
+        os.utime(path, (st.st_atime, st.st_mtime + 5))
+        second = self.t.sync()
+        self.assertEqual(self.unclaimed("type:brand-new-type"), 1,
+                         "a re-read added the same unclaimed record again")
+        self.assertNotIn("tool_calls", second["counts"],
+                         "a re-read counted a call that was already indexed: "
+                         f"{second['counts']}")
+        self.assertEqual(self.t.one("SELECT COUNT(*) c FROM tool_calls")["c"], 1)
+
+    def unclaimed(self, reason):
+        row = self.t.one("SELECT count FROM unparsed WHERE reason = ?", (reason,))
+        return row["count"] if row else 0
+
     def test_an_offset_after_an_unterminated_record_sits_on_a_record_boundary(self):
         """The same rule, on the shape the line-boundary case cannot see.
 
