@@ -625,3 +625,185 @@ Cost     One aggregate expression moves into the subquery; the outer SELECT lose
          mean fewer runs carry a total than before.
 
 Commit   0098d39
+
+### D-030 · 2026-10-26 · fix
+Symptom  `ensure_schema()` stamped `meta.schema_version` unconditionally, and every write entry point
+         calls it first — sync, the TUI's constructor and the CLI's backup. A database written by a
+         newer qcut (v99) was therefore rewritten to v3 *before* `migrate()` could compare the two,
+         so the refusal never fired: the file was half-read against a schema this code does not know,
+         and the marker a newer tool looks for was destroyed for good.
+Change   The version check moved into `ensure_schema()` behind `db.check_version()`, so no caller can
+         reach the tables by skipping `migrate()`. The report CLI refuses a newer schema on its read
+         path as well; `health` and `env` keep working, because naming the version is their job. All
+         three entry points print the message and exit non-zero instead of raising a traceback.
+Evidence L0 2026-10-26 — 423 tests, OK. Each of the three entry points opens a v99 file in its own
+         suite and asserts both the refusal and that the marker still reads 99:
+         `test_sync_refuses_it_and_leaves_the_marker_alone`,
+         `test_a_database_from_a_newer_qcut_is_refused_not_rewritten`,
+         `test_the_app_refuses_a_newer_schema_and_keeps_the_marker`. Reverted against the old
+         `ensure_schema`, all three report a silent rewrite to 3.
+Cost     One extra `meta` read on every open, and a downgrade now fails loudly instead of quietly
+         re-stamping the file. That is the point, but it does mean a user who rolls back has to
+         restore a snapshot rather than keep using the newer file.
+Commit   8fb29c6
+
+### D-031 · 2026-10-26 · fix
+Symptom  The request log is capped at `log_limit` (100) and the *filtered* note printed `len(rows)` as
+         "N matches", while the unfiltered branch beside it correctly said "showing 100 of 50,902
+         requests". One page, two numbers for one fact: a filter matching 50,902 rows claimed 100.
+Change   The match count comes from its own `COUNT` over the same WHERE the log uses
+         (`_usage_log_where`, so the two cannot drift), and both branches share the "showing N of M"
+         shape.
+Evidence L0 2026-10-26 — 423 tests, OK. `test_a_usage_filter_note_reports_the_match_count_not_the_page`
+         sets `log_limit=2` over a six-match window and asserts "showing 2 of 6 matches"; the old
+         wording printed "2 matches".
+Cost     One extra aggregate query per keystroke in the filter box. It runs against the same windowed
+         index as the page it describes, so it costs less than the page it corrects.
+Commit   5b2345d
+
+### D-032 · 2026-10-26 · fix
+Symptom  A live transcript opens with `runtime-config` (the session's model) and
+         `workspace-directories` (its project) *before* the first assistant record, which is what
+         creates the `sessions` row. Both handlers were `UPDATE`s, so on a session the indexer had not
+         seen yet they matched nothing: `sessions.model` stayed NULL, and no later run could recover
+         it because the sync offset had already passed the record.
+Change   Both are now `INSERT … ON CONFLICT DO UPDATE`, so whichever record arrives first creates the
+         row and the assistant records fill in the rest; `COALESCE` keeps the old semantics in each
+         direction.
+Evidence L0 2026-10-26 — 423 tests, OK. `test_a_session_opened_by_a_runtime_config_keeps_its_model`
+         writes the four records in the real order and asserts a non-NULL model;
+         `test_a_session_that_only_opened_is_still_recorded` covers the one-record file.
+Cost     A session now exists as soon as any of its records is indexed, including one that never
+         reached an assistant turn — a row with a model and no requests. That is the honest shape, but
+         it does make `sessions` count slightly higher on a live index.
+Commit   c56459c
+
+### D-033 · 2026-10-26 · fix
+Symptom  `plugin_usage`'s unique key was `(plugin, kind, target, session_id, ts)`. Two Skill blocks in
+         one assistant record share every one of those, so the second `INSERT OR IGNORE` was dropped:
+         the Skills tab counted 2 calls while the Plugins tab counted 1 use for the same two
+         invocations — two pages, two numbers, one fact.
+Change   `call_id` joins the table and the key, which makes `plugin_usage` a per-invocation ledger like
+         `skill_usage`: a re-index still de-duplicates (same call id), two calls stay two. A unique
+         index cannot be widened in place, so `_ensure_index` compares `PRAGMA index_info` against the
+         declared columns and rebuilds only when they differ; the v3 repair's de-duplication groups by
+         the same six columns.
+Evidence L0 2026-10-26 — 423 tests, OK. `test_two_skills_in_one_record_are_two_uses` asserts both
+         pages agree, and `test_usage` upgrades a five-column v3 index to prove the sixth column
+         arrives on an existing database.
+Cost     `plugin_usage` gains a column and a rebuild path for indexes whose shape drifts. An index
+         that differs for an unrelated reason is now rebuilt rather than trusted — cheaper than a
+         silent collapse, but it is a write on open.
+Commit   517c3e8
+
+### D-034 · 2026-10-26 · fix
+Symptom  A same-length rewrite moves the mtime without growing the file, so the offset resets and the
+         whole transcript is read again. Every unknown record was added to the persistent `unparsed`
+         counter a second time — one rewrite doubled every reason in the file, which is exactly the
+         signal a format change is read from. The run summary counted every call again too, because
+         the writers bumped after `INSERT OR IGNORE` without reading its rowcount.
+Change   `unparsed` is keyed by `(reason, source)` and replaced per transcript, so a reason that
+         stopped occurring also disappears and a drop reads as a fix; `q_unparsed` sums the rows per
+         reason so the report stays one line per reason. The v1–v3 counter cannot be widened in place,
+         so `ensure_schema` drops it and lets `TABLES_SQL` recreate it — those rows name no file and
+         cannot be carried over honestly, and the next sync re-derives them. Every writer now bumps by
+         rowcount, and `_bump` ignores a zero so an untouched key stays absent.
+Evidence L0 2026-10-26 — 423 tests, OK. `test_a_rewritten_transcript_does_not_double_count` rewrites a
+         file byte-for-byte with a newer mtime and asserts `unparsed` stays 1 and the second run
+         reports no tool calls.
+Cost     The unparsed table is rebuilt once on an existing database, and its old counts are lost until
+         the next full re-read of each transcript. The counts are derived, so that is recoverable —
+         but the first sync after the upgrade reports zeros for reasons that were already recorded.
+Commit   9658142
+
+### D-035 · 2026-10-26 · fix
+Symptom  Every report that took a `--limit` printed the first N rows and stopped: `show` cut at 20, the
+         entity tabs and the project board at 50. A truncated list read as the whole answer, so a
+         tool with 51 rows and one with 5,000 looked identical.
+Change   `_cap()` fetches the full ranked list, cuts it in Python and returns a note naming the total;
+         the note prints behind a blank line, so it never reads as a table row. `show` uses the count
+         its own summary already carries and needs no second query.
+Evidence L0 2026-10-26 — 423 tests, OK. `test_a_truncated_report_says_how_many_rows_it_left_out` and
+         `test_the_project_reports_say_when_they_left_rows_out` assert the note, that the note is not
+         counted as a row, and that a report showing everything says nothing about a limit; without
+         `_cap` the assertions find no note at all.
+Cost     The entity tabs now read their whole ranked list instead of the top 50. Those are aggregate
+         rows — one per tool, skill or project — so the page grows in memory with the entity count,
+         not with the call count.
+Commit   39fd312
+
+### D-036 · 2026-10-26 · fix
+Symptom  The requests drill-down chose its query with `session_id is not None`, so a session row whose
+         id was NULL took the Agent-run branch: it asked for a run keyed by `None`, found nothing and
+         reported a session's own requests as a run that never existed. The heading fell back to
+         "(unnamed)", which named neither the session nor the problem.
+Change   The branch keys off `agent_call_id`, which is what a run actually needs.
+         `q_session_summary` and `q_session_calls` match with `IS ?` instead of `= ?` — `= NULL` matches
+         no row, so the group was unreachable even from the right branch — and the heading says
+         "(no session id)".
+Evidence L0 2026-10-26 — 423 tests, OK.
+         `test_a_session_with_no_id_opens_as_a_session_not_as_an_agent_run` drives the Dashboard →
+         project → session ladder over a NULL-id row and asserts one request, not an empty run.
+Cost     A NULL-id group now shows its requests, so the project screen's session count and the
+         requests reachable from it agree — but a transcript that never carried an id no longer looks
+         like an empty run, which is one fewer "no data" case to explain.
+Commit   5eacd51
+
+### D-037 · 2026-10-26 · chore
+Symptom  The Dashboard's Runtime row and per-day calls sparkline were removed, but their code stayed
+         and the suite kept it alive: `q_usage_daily` and `q_usage_activity` had no caller outside
+         their own tests, `_SPARK` was an unused constant, and `HISTORY_COLUMNS["model"]` with
+         `HistoryScreen._model_row` described a history table no route can open (Tokens opens
+         `ModelResponsesScreen`; the CLI's `show model` uses the query directly). The Chinese README
+         still described both removed panels.
+Change   The four pieces are gone, with the two cases that only exercised the dead queries.
+         `HistoryScreen._usage_total` was not dead but wrong: it re-derived a run's total from the
+         row's *summed* columns, so (30/3) and (NULL/40) printed 73 where the head, the Agents tab and
+         the CLI all print 33 — D-029's bug one level down. The row now reads the per-response total
+         the query already computes. A guard replaces the deleted tests' habit: every public `q_*`
+         function must have a caller outside `scripts/tests`. `README.zh-CN.md` was corrected in the
+         same pass (commit a03ae37).
+Evidence L0 2026-10-26 — 423 tests, OK. `test_every_public_query_has_a_caller_outside_the_tests`
+         reported exactly `q_usage_activity, q_usage_daily` before the deletion;
+         `test_a_runs_history_row_uses_the_per_response_usage_total` printed 73 before the mapping
+         change and 33 after.
+Cost     A query written for a future panel now fails the suite until it is wired to one. That is the
+         trade: the guard cannot tell "about to be used" from "left behind".
+Commit   e4854a1
+
+### D-038 · 2026-10-26 · fix
+Symptom  An MCP admin operation (`mcp__admin__*`) is keyed `(NULL, NULL)`, so the MCP handler's
+         `if not server: return` swallowed the key press: the row looked selectable exactly like its
+         neighbours and did nothing, which reads as a broken key rather than as a row with nothing to
+         open.
+Change   It now says "This row is an MCP admin operation — no server to open" and still pushes no
+         screen.
+Evidence L0 2026-10-26 — 423 tests, OK. `test_an_mcp_admin_row_says_it_has_no_server_to_open` patches
+         `notify` and asserts both that it was called and that no screen was pushed; before the change
+         it reported "Enter on an admin row did nothing".
+Cost     One notification string that the MCP page did not have. The alternative — opening the
+         `(NULL, NULL)` group — would need a server-less history query, which is a panel this tool
+         does not have.
+Commit   cd917c7
+
+### D-039 · 2026-10-26 · guard
+Symptom  Two cases could not fail. `test_every_default_is_a_real_attribute_the_tui_consults` compared
+         `app.cfg["log_limit"]` with itself and checked `"top_n" in app.cfg` on the dict the test had
+         just handed the app, under a docstring promising to catch a setting no renderer reads. And
+         the tripwire guarded the real database and `~/.qoder-cn` but not `~/.config/qcut`, so a test
+         that reached `load_config()` without pinning `QCUT_CONFIG` passed on the maintainer's own
+         settings instead of on the code.
+Change   The wiring case reads the TUI's source and reports any `DEFAULTS` key with no `cfg["<key>"]`
+         lookup; the functional half moved where a fixture can afford rows —
+         `test_the_usage_page_shows_only_log_limit_rows` renders with `log_limit=2` and expects two
+         rows. The settings directory is now a protected root, frozen from `Path.home()` like the
+         others rather than read from `CONFIG_PATH` (which moves when `XDG_CONFIG_HOME` or
+         `QCUT_CONFIG` is set), and the refusal names the variable to pin, so the config case says
+         `QCUT_CONFIG` instead of `QCUT_QODER_DIR`.
+Evidence L0 2026-10-26 — 423 tests, OK. Pinning the Usage page's `log_limit` to a literal makes the new
+         case report 6 rows instead of 2; `test_reading_the_real_config_file_is_refused` fails with
+         `AttributeError: PROTECTED_CONFIG_DIR` against the old tripwire.
+Cost     A test that opens a file under `~/.config/qcut` without pinning `QCUT_CONFIG` is now refused
+         rather than silently allowed — which is the point, but it is a new way for an unrelated suite
+         to fail after someone adds a config read.
+Commit   d799e78 63c41b2
