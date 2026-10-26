@@ -1025,6 +1025,43 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             db.migrate(self.t.db_path)
 
+    def test_an_upgraded_database_widens_the_plugin_key_in_place(self):
+        """The widening has to reach an index that already exists.
+
+        A v3 install has ux_plugin_usage over five columns, and
+        CREATE UNIQUE INDEX IF NOT EXISTS matches on the name: without the
+        rebuild the old shape would survive every upgrade and keep folding
+        same-millisecond calls.
+        """
+        db.migrate(self.t.db_path)
+        conn = db.open_db(self.t.db_path)
+        try:
+            conn.execute("DROP INDEX IF EXISTS ux_plugin_usage")
+            conn.execute("ALTER TABLE plugin_usage DROP COLUMN call_id")
+            conn.execute(
+                "CREATE UNIQUE INDEX ux_plugin_usage"
+                " ON plugin_usage(plugin, kind, target, session_id, ts)")
+            conn.commit()
+        finally:
+            conn.close()
+        db.migrate(self.t.db_path)
+        conn = db.open_db(self.t.db_path)
+        try:
+            columns = [r[2] for r in conn.execute(
+                "PRAGMA index_info(ux_plugin_usage)")]
+            self.assertEqual(columns, ["plugin", "kind", "target", "session_id",
+                                       "ts", "call_id"])
+            for call in ("c1", "c2"):
+                conn.execute(
+                    "INSERT INTO plugin_usage(call_id, plugin, kind, target,"
+                    " session_id, ts) VALUES(?,?,?,?,?,?)",
+                    (call, "p", "skill", "s", "s1", 1))
+            conn.commit()
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM plugin_usage").fetchone()[0], 2)
+        finally:
+            conn.close()
+
     def test_a_v1_database_gains_the_v2_ledger_additively(self):
         """v2 adds two columns and one table; existing rows are left alone.
         Their new columns stay NULL until `qcut sync --full` backfills them,

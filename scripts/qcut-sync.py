@@ -620,9 +620,10 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
         _bump(counts, "skill_calls")
         if plugin:
             conn.execute(
-                "INSERT OR IGNORE INTO plugin_usage(plugin, marketplace, kind, target,"
-                " session_id, project, ts) VALUES(?,?,?,?,?,?,?)",
-                (plugin, None, "skill", skill, sid, project, ts),
+                "INSERT OR IGNORE INTO plugin_usage(call_id, plugin, marketplace,"
+                " kind, target, session_id, project, ts)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (call_id, plugin, None, "skill", skill, sid, project, ts),
             )
     elif category == "agent":
         conn.execute(

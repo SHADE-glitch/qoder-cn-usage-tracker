@@ -305,8 +305,14 @@ CREATE TABLE IF NOT EXISTS mcp_usage (
 CREATE INDEX IF NOT EXISTS idx_mcp_server ON mcp_usage(server);
 CREATE INDEX IF NOT EXISTS idx_mcp_tool   ON mcp_usage(tool);
 
+-- One row per *invocation*, keyed like skill_usage: a record can carry two Skill
+-- blocks that share a plugin, a target and a millisecond, and a key without the
+-- call id folded them into one — Skills said two calls while Plugins said one
+-- use about the same pair. `ux_plugin_usage` is created by `_ensure_index` in
+-- `ensure_schema`, because a unique index cannot be widened in place.
 CREATE TABLE IF NOT EXISTS plugin_usage (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id     TEXT,
     plugin      TEXT,
     marketplace TEXT,
     kind        TEXT,             -- skill | command | agent | tool
@@ -315,8 +321,6 @@ CREATE TABLE IF NOT EXISTS plugin_usage (
     project     TEXT,
     ts          INTEGER
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_plugin_usage
-    ON plugin_usage(plugin, kind, target, session_id, ts);
 
 CREATE TABLE IF NOT EXISTS commands (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -686,6 +690,26 @@ def _has_indexed_state(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _ensure_index(conn, name: str, table: str, columns, unique=False) -> None:
+    """Create an index, or rebuild it when its column list has changed.
+
+    `CREATE INDEX IF NOT EXISTS` matches on the *name*, so a key that gains a
+    column would keep its old shape forever on an upgraded database — silently
+    folding rows the code now stores apart. Comparing the columns is what makes
+    the widening reach an index that already exists.
+    """
+    want = list(columns)
+    # PRAGMA index_info yields (seqno, cid, name): the *name* is the third field.
+    have = [row[2] for row in conn.execute(f"PRAGMA index_info({name})")]
+    if have == want:
+        return
+    conn.execute(f"DROP INDEX IF EXISTS {name}")
+    conn.execute(
+        f"CREATE {'UNIQUE ' if unique else ''}INDEX {name}"
+        f" ON {table}({', '.join(want)})"
+    )
+
+
 def _add_missing_columns(conn: sqlite3.Connection, table: str, columns) -> bool:
     """Add columns a v1 table lacks, in place. Returns True when one was added.
 
@@ -767,7 +791,7 @@ def _repair_v3(conn: sqlite3.Connection) -> None:
         DELETE FROM plugin_usage
         WHERE id NOT IN (
             SELECT MIN(id) FROM plugin_usage
-            GROUP BY plugin, kind, target, session_id, ts)
+            GROUP BY plugin, kind, target, session_id, ts, call_id)
     """)
     direct = conn.execute(
         "SELECT call_id, tool_name, session_id, project, ts, status, duration_ms"
@@ -809,6 +833,10 @@ def ensure_schema(conn: sqlite3.Connection) -> str:
         "CREATE INDEX IF NOT EXISTS idx_model_calls_parent"
         " ON model_calls(parent_call_id)"
     )
+    _add_missing_columns(conn, "plugin_usage", (("call_id", "TEXT"),))
+    _ensure_index(conn, "ux_plugin_usage", "plugin_usage",
+                  ("plugin", "kind", "target", "session_id", "ts", "call_id"),
+                  unique=True)
     if 0 < current < SCHEMA_VERSION:
         _repair_v3(conn)
     conn.executescript(VIEWS_SQL)

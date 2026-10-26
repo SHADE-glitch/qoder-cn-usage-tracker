@@ -335,6 +335,35 @@ class EntityClassificationTest(unittest.TestCase):
         self.assertEqual(row["tool_name"], "Bash")
         self.assertEqual(row["category"], "builtin")
 
+    def test_two_skills_in_one_record_are_two_uses(self):
+        """The Skills page and the Plugins page must agree on one fact.
+
+        plugin_usage's unique key was (plugin, kind, target, session_id, ts).
+        Two Skill blocks in one assistant record share every one of those —
+        same session, same millisecond — so the second INSERT OR IGNORE was
+        dropped: Skills said 2 calls, Plugins said 1 use, about the same two
+        invocations. The invocation id joins the key, so a re-index still
+        de-duplicates and two calls stay two.
+        """
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "Skill", skill="qoder-context:knowledge-plan"),
+                tool_use("c2", "Skill", skill="qoder-context:knowledge-plan"),
+            ]),
+        ])
+        self.t.sync()
+        self.t.sync()  # a second pass must not add a third row
+        conn = self.t.conn()
+        try:
+            skills = {r["skill"]: r["calls"] for r in db.q_skills(conn)}
+            plugins = {r["plugin"]: r["uses"] for r in db.q_plugins(conn)}
+        finally:
+            conn.close()
+        self.assertEqual(skills["knowledge-plan"], 2)
+        self.assertEqual(plugins["qoder-context"], 2,
+                         "the Plugins page folded two calls into one use")
+        self.assertEqual(self.t.one("SELECT COUNT(*) c FROM plugin_usage")["c"], 2)
+
     def test_a_plugin_qualified_skill_is_credited_to_its_plugin(self):
         self.t.write("projects/-work-demo/s1.jsonl", [
             assistant("s1", "m1", content=[
