@@ -104,6 +104,30 @@ class TabWiringTest(unittest.IsolatedAsyncioTestCase):
         app = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
         return app, app.run_test(size=size)
 
+    async def test_the_usage_page_shows_only_log_limit_rows(self):
+        """`log_limit` is a setting only if a table obeys it.
+
+        `test_config` can say the TUI's source reads the key; only a rendered
+        table says the number reached the query. The default is 100 here, so a
+        limit of 2 must cut a 7-request window down to 2.
+        """
+        from textual.widgets import DataTable, TabbedContent
+        app = TUI.TrackerApp(db_path=self.t.db_path,
+                             cfg=dict(QUIET_CFG, log_limit=2))
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.query_one(TabbedContent).active = "usage"
+            await pilot.pause()
+            await pilot.pause()
+            table = app.query_one("#usage-table", DataTable)
+            self.assertEqual(table.row_count, 2, "log_limit did not reach the query")
+        wide = TUI.TrackerApp(db_path=self.t.db_path, cfg=QUIET_CFG)
+        async with wide.run_test(size=(140, 40)) as pilot:
+            wide.query_one(TabbedContent).active = "usage"
+            await pilot.pause()
+            await pilot.pause()
+            self.assertGreater(wide.query_one("#usage-table", DataTable).row_count, 2,
+                               "the fixture has no extra rows to cut — the case proves nothing")
+
     async def test_the_eight_tabs_are_present_and_in_order(self):
         """The family contract, read against literals.
 

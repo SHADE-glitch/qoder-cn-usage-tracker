@@ -191,15 +191,19 @@ class WiringTest(unittest.TestCase):
 
     def test_every_default_is_a_real_attribute_the_tui_consults(self):
         """A key the loader returns and no renderer reads is a setting the user
-        can edit with no effect."""
-        tui = load_tui()
-        app = tui.TrackerApp(db_path="/tmp/qcut-cfg-test.db")
-        try:
-            self.assertEqual(app.cfg["log_limit"], app.cfg["log_limit"])
-            self.assertIn("top_n", app.cfg)
-            self.assertEqual(app.cfg["detail_limit"], db.DEFAULTS["detail_limit"])
-        finally:
-            app.conn.close()
+        can edit with no effect.
+
+        Read from the TUI's own source rather than from the app's dict: asking
+        the dict whether it holds a key it was just given proves nothing, which
+        is what this case used to do (`assertEqual(cfg[k], cfg[k])`). That the
+        value reaches a *table* is checked where the fixture can afford rows —
+        `test_tui.TabWiringTest.test_the_usage_page_shows_only_log_limit_rows`.
+        """
+        source = (SCRIPTS / "qcut-tui.py").read_text(encoding="utf-8")
+        unread = [key for key in db.DEFAULTS
+                  if f'cfg["{key}"]' not in source]
+        self.assertEqual(unread, [],
+                         "settings no renderer reads: " + ", ".join(sorted(unread)))
 
 
 class HealthSurfaceTest(unittest.TestCase):
