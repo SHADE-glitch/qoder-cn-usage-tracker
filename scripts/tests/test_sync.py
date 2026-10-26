@@ -6,6 +6,8 @@ Each case builds a throwaway Qoder tree in a temp directory; the real
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import types
@@ -1000,6 +1002,59 @@ class CrashSafetyTest(unittest.TestCase):
         self.assertEqual(
             self.t.one("SELECT COUNT(*) c FROM model_calls")["c"], 1,
             "the file stayed skipped after it became readable")
+
+
+class NewerSchemaTest(unittest.TestCase):
+    """A database from a newer qcut must be refused, not quietly downgraded.
+
+    ensure_schema used to stamp schema_version unconditionally, and every write
+    entry point calls it first — so a v99 file was rewritten to v3 *before*
+    migrate could compare the versions, the refusal never fired, and the marker
+    a newer tool needs was destroyed. The guard now sits in ensure_schema itself,
+    the one function all three entry points reach, so none of them can step
+    around it.
+    """
+
+    def newer_db(self):
+        t = TempTree(self)
+        db.migrate(t.db_path)
+        conn = db.open_db(t.db_path)
+        try:
+            conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+        return t
+
+    def stored(self, t):
+        conn = db.open_db(t.db_path)
+        try:
+            return db.stored_version(conn)
+        finally:
+            conn.close()
+
+    def test_sync_refuses_it_and_leaves_the_marker_alone(self):
+        t = self.newer_db()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = load_sync().main(["--db", str(t.db_path)])
+        self.assertEqual(rc, 1, out.getvalue())
+        self.assertIn("newer", err.getvalue())
+        self.assertEqual(self.stored(t), 99,
+                         "the version marker was rewritten by a tool that does "
+                         "not understand the schema")
+
+    def test_the_guard_is_the_one_every_ensure_schema_caller_hits(self):
+        """The unit form of the same rule: a caller cannot bypass the refusal by
+        reaching for ensure_schema directly instead of migrate."""
+        t = self.newer_db()
+        conn = db.open_db(t.db_path)
+        try:
+            with self.assertRaises(db.SchemaTooNew):
+                db.ensure_schema(conn)
+        finally:
+            conn.close()
+        self.assertEqual(self.stored(t), 99)
 
 
 class FormatDocTest(unittest.TestCase):

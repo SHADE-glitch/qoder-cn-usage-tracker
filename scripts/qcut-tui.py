@@ -3148,7 +3148,13 @@ def main(argv=None) -> int:
     except db.ConfigError as exc:
         print(f"qcut: {exc}", file=sys.stderr)
         return 2
-    TrackerApp(db_path=args.db, cfg=cfg).run()
+    try:
+        TrackerApp(db_path=args.db, cfg=cfg).run()
+    except db.SchemaTooNew as exc:
+        # Named like an unreadable config file: the app cannot render a schema it
+        # does not understand, and a traceback would not say which file to fix.
+        print(f"qcut: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

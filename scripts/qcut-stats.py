@@ -854,13 +854,25 @@ def main(argv=None) -> int:
     # These open their own writable connection (or none), so they run before the
     # shared read-only one — a report connection cannot checkpoint or VACUUM.
     if args.cmd in ("backup", "restore", "vacuum", "format"):
-        return {"backup": cmd_backup, "restore": cmd_restore,
-                "vacuum": cmd_vacuum, "format": cmd_format}[args.cmd](args)
+        try:
+            return {"backup": cmd_backup, "restore": cmd_restore,
+                    "vacuum": cmd_vacuum, "format": cmd_format}[args.cmd](args)
+        except db.SchemaTooNew as exc:
+            print(f"qcut: {exc}", file=sys.stderr)
+            return 1
 
     conn = db.open_db(args.db, readonly=True)
     try:
         # `health` and `env` are the two reports whose job is to say what is
-        # missing; refusing to run them on a pre-index database inverts that.
+        # missing — including a schema this tool cannot read; refusing to run
+        # them inverts that. Every other command would be reading tables whose
+        # meaning a newer qcut may have changed, so it names the version instead.
+        if args.cmd not in ("health", "env"):
+            try:
+                db.check_version(conn)
+            except db.SchemaTooNew as exc:
+                print(f"qcut: {exc}", file=sys.stderr)
+                return 1
         if db.stored_version(conn) < db.SCHEMA_VERSION and args.cmd not in ("health", "env"):
             print("index is empty or older than this tool — run `qcut sync` first",
                   file=sys.stderr)

@@ -620,6 +620,32 @@ class CliGuardTest(unittest.TestCase):
         self.assertEqual(len(line.split("..")), 2,
                          f"the span is not a pair of endpoints: {line}")
 
+    def test_a_database_from_a_newer_qcut_is_refused_not_rewritten(self):
+        """The read path and the one write path both refuse a v99 file.
+
+        `stats` used to pass the version gate (99 >= 3) and then read a schema it
+        does not know; `backup` went through ensure_schema, which stamped the file
+        back to v3 and destroyed the marker. Both now name the problem instead.
+        """
+        db.migrate(self.t.db_path)
+        conn = db.open_db(self.t.db_path)
+        try:
+            conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+        for argv in (("stats",), ("backup",)):
+            with self.subTest(argv=argv):
+                rc, out, err = run("--db", self.t.db_path, *argv)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("newer", err)
+                conn = db.open_db(self.t.db_path)
+                try:
+                    self.assertEqual(db.stored_version(conn), 99,
+                                     f"{argv[0]} rewrote the version marker")
+                finally:
+                    conn.close()
+
     def test_show_refuses_a_name_the_index_has_never_seen(self):
         """A report about nothing must not be printed as a report.
 

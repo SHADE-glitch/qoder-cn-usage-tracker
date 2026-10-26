@@ -1038,7 +1038,12 @@ def main(argv=None) -> int:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--db", default=str(db.DB_PATH))
     args = parser.parse_args(argv)
-    summary = run(full=args.full, quiet=args.quiet, db_path=Path(args.db))
+    try:
+        summary = run(full=args.full, quiet=args.quiet, db_path=Path(args.db))
+    except db.SchemaTooNew as exc:
+        # A traceback would name no way out; the refusal already does.
+        print(f"qcut: {exc}", file=sys.stderr)
+        return 1
     return 0 if summary else 1
 
 

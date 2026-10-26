@@ -7,7 +7,9 @@ Every case builds a temp database from fixture transcripts; the real
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
+import io
 import sys
 import unittest
 from datetime import datetime
@@ -2014,6 +2016,37 @@ class UnifiedControlsTest(unittest.IsolatedAsyncioTestCase):
                                      for value in intervals),
                                  f"a refresh/sync timer survived: {intervals}")
                 self.assertFalse(hasattr(app, "_auto_sync"))
+
+
+class NewerSchemaTest(unittest.TestCase):
+    """A v99 index must stop the TUI at launch, with the marker intact.
+
+    The app opened its connection and called ensure_schema in __init__, so the
+    version was already rewritten to v3 by the time on_mount asked migrate; the
+    refusal could never fire and the next launch would read a v3 file it had
+    mislabelled itself. main() now names the problem and returns 2, like a
+    config file it cannot read.
+    """
+
+    def test_the_app_refuses_a_newer_schema_and_keeps_the_marker(self):
+        t = TempTree(self)
+        db.migrate(t.db_path)
+        conn = db.open_db(t.db_path)
+        try:
+            conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = TUI.main(["--db", str(t.db_path)])
+        self.assertEqual(rc, 2, out.getvalue())
+        self.assertIn("newer", err.getvalue())
+        conn = db.open_db(t.db_path)
+        try:
+            self.assertEqual(db.stored_version(conn), 99)
+        finally:
+            conn.close()
 
 
 class ClickCadenceTest(unittest.TestCase):

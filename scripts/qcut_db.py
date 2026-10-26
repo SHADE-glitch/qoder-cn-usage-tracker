@@ -92,6 +92,16 @@ class ConfigError(ValueError):
     """The settings file, or an environment value, is not usable."""
 
 
+class SchemaTooNew(RuntimeError):
+    """The database was written by a newer qcut than this one.
+
+    Raised from the *only* function that creates or widens the schema, so no
+    caller can reach the tables by skipping `migrate`: opening a v99 file used to
+    stamp it back to v3 on the way in, which both half-read a schema this code
+    does not know and destroyed the marker the newer tool looks for.
+    """
+
+
 def _setting_value(key, value, source):
     low, high, kind = _BOUNDS[key]
     # bool is an int subclass: ``top_n = true`` must not quietly become top_n = 1.
@@ -647,6 +657,22 @@ def stored_version(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def check_version(conn: sqlite3.Connection) -> int:
+    """The stored schema version, refusing one this code cannot read.
+
+    The one place the newer-schema rule is decided, called by `ensure_schema`
+    (so every writer inherits it) and by the report CLI's dispatch.
+    """
+    current = stored_version(conn)
+    if current > SCHEMA_VERSION:
+        where = db_file(conn) or "<memory>"
+        raise SchemaTooNew(
+            f"{where}: schema v{current} is newer than this tool understands "
+            f"(v{SCHEMA_VERSION}) — update qcut or point QCUT_DB elsewhere"
+        )
+    return current
+
+
 def _has_indexed_state(conn: sqlite3.Connection) -> bool:
     """Whether a snapshot would preserve anything at all.
 
@@ -764,8 +790,14 @@ def _repair_v3(conn: sqlite3.Connection) -> None:
 
 
 def ensure_schema(conn: sqlite3.Connection) -> str:
-    """Create or widen the schema. Idempotent, and safe on a live install."""
-    current = stored_version(conn)
+    """Create or widen the schema. Idempotent, and safe on a live install.
+
+    Refuses a database from a newer qcut *before* touching it, which is why the
+    check lives here rather than only in `migrate`: every write entry point
+    (sync, the TUI's constructor, the CLI's backup) calls this function, and a
+    guard one call away from the writes is a guard that can be skipped.
+    """
+    current = check_version(conn)
     conn.executescript(TABLES_SQL)
     # Kept out of TABLES_SQL: CREATE INDEX on a v1 file would run before the
     # columns exist and fail the whole upgrade.
@@ -800,12 +832,6 @@ def migrate(path: Path | str = DB_PATH) -> str:
     """
     conn = open_db(path)
     try:
-        current = stored_version(conn)
-        if current > SCHEMA_VERSION:
-            raise RuntimeError(
-                f"{path}: schema v{current} is newer than this tool understands "
-                f"(v{SCHEMA_VERSION}) — update qcut or point QCUT_DB elsewhere"
-            )
         return ensure_schema(conn)
     finally:
         conn.close()
