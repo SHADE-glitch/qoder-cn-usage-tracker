@@ -147,6 +147,26 @@ def _limit(args, default=50):
     return args.limit or default
 
 
+def _cap(rows, limit, noun):
+    """Cut a report to `limit` and say what it left out.
+
+    A `--limit` that prints the first N rows and stops reads as "this is the
+    list": `show` did that at 20 and the entity tabs at 50. Returns the page
+    and a note for the caller to print *after* the table, behind a blank line,
+    so it never reads as a row of data.
+    """
+    if limit is None or len(rows) <= limit:
+        return rows, ""
+    return rows[:limit], (f"  showing {fmt_n(limit)} of {fmt_n(len(rows))} "
+                          f"{noun} — raise --limit for the rest")
+
+
+def _print_note(note: str) -> None:
+    if note:
+        print()
+        print(note)
+
+
 # --- subcommands -----------------------------------------------------------
 
 
@@ -220,29 +240,32 @@ def _used_only(rows, key="calls", show_all=False):
 
 
 def cmd_tools(conn, args):
-    rows = _used_only(db.q_tools(conn, limit=_limit(args)),
-                      show_all=getattr(args, "all", False))
+    rows = _used_only(db.q_tools(conn), show_all=getattr(args, "all", False))
+    rows, note = _cap(rows, _limit(args), "tools")
     cur = [[r["tool_name"], fmt_n(r["calls"]), fmt_n(r["completed"]), fmt_n(r["failed"]),
             fmt_n(r["pending"]), ms(r["avg_ms"]), ts(r["last_used"])] for r in rows]
     print(table(["tool", "calls", "ok", "failed", "pending", "avg", "last used"], cur,
                 aligns=["<", ">", ">", ">", ">", ">", "<"]))
+    _print_note(note)
     return 0
 
 
 def cmd_skills(conn, args):
-    rows = _used_only(db.q_skills(conn, limit=_limit(args)),
-                      show_all=getattr(args, "all", False))
+    rows = _used_only(db.q_skills(conn), show_all=getattr(args, "all", False))
+    rows, note = _cap(rows, _limit(args), "skills")
     cur = [[r["skill"], fmt_n(r["calls"]), fmt_n(r["completed"]),
             fmt_n(r["failed"]), r["plugin"] or "-", ts(r["last_used"])]
            for r in rows]
     print(table(["skill", "calls", "ok", "failed", "plugin", "last used"], cur,
                 aligns=["<", ">", ">", ">", "<", "<"]))
+    _print_note(note)
     return 0
 
 
 def cmd_agents(conn, args):
-    rows = _used_only(db.q_agents(conn, limit=_limit(args)), key="runs",
+    rows = _used_only(db.q_agents(conn), key="runs",
                       show_all=getattr(args, "all", False))
+    rows, note = _cap(rows, _limit(args), "agents")
     if not rows:
         print("no agent runs in this window — run `qcut sync` or pass --all")
         return 0
@@ -263,13 +286,15 @@ def cmd_agents(conn, args):
     print()
     print("  runs = Agent tool calls · requests = responses linked by the")
     print("         transcript's own parent_tool_use_id (not inferred)")
+    _print_note(note)
     return 0
 
 
 def cmd_projects(conn, args):
     start, end = _window_from_args(args)
     if args.project is None:
-        rows = db.q_project_board(conn, start, end, limit=_limit(args))
+        rows, note = _cap(db.q_project_board(conn, start, end),
+                          _limit(args), "projects")
         if not rows:
             print("no project requests in this window")
             return 0
@@ -286,6 +311,7 @@ def cmd_projects(conn, args):
         print(table(["project", "sessions", "requests", "usage total", "credits",
                      "compactions", "compacted", "last used"], cur,
                     aligns=["<", ">", ">", ">", ">", ">", ">", "<"]))
+        _print_note(note)
         print()
         print("  projects are the transcript's own cwd · compacted = context tokens")
         print("             dropped by compactions (never added to a token total)")
@@ -301,7 +327,8 @@ def cmd_projects(conn, args):
         print(f"  {_SHOW_LABELS.get(key, key):<18} "
               f"{_fmt_field(key, summary[key], summary)}")
     print()
-    rows = db.q_project_sessions(conn, project, start, end, limit=_limit(args, 50))
+    rows = db.q_project_sessions(conn, project, start, end)
+    rows, note = _cap(rows, _limit(args, 50), "sessions")
     if not rows:
         print("  (no sessions in this window)")
         return 0
@@ -313,12 +340,13 @@ def cmd_projects(conn, args):
     print(table(["session", "last used", "requests", "usage total", "credits",
                  "peak ctx", "compactions", "compacted", "model"],
                 cur, aligns=["<", "<", ">", ">", ">", ">", ">", ">", "<"]))
+    _print_note(note)
     return 0
 
 
 def cmd_mcp(conn, args):
-    rows = _used_only(db.q_mcp(conn, limit=_limit(args)),
-                      show_all=getattr(args, "all", False))
+    rows = _used_only(db.q_mcp(conn), show_all=getattr(args, "all", False))
+    rows, note = _cap(rows, _limit(args), "MCP targets")
     if not rows:
         print("no MCP calls in this window — run `qcut sync` or pass --all")
         return 0
@@ -327,6 +355,7 @@ def cmd_mcp(conn, args):
             ts(r["last_used"])] for r in rows]
     print(table(["server", "tool", "calls", "ok", "failed", "avg", "last used"],
                 cur, aligns=["<", "<", ">", ">", ">", ">", "<"]))
+    _print_note(note)
     return 0
 
 
@@ -365,7 +394,7 @@ def cmd_models(conn, args):
 
 
 def cmd_commands(conn, args):
-    rows = db.q_commands(conn, limit=_limit(args))
+    rows, note = _cap(db.q_commands(conn), _limit(args), "commands")
     if not rows:
         print("no slash commands recorded yet — run `qcut sync`")
         return 0
@@ -373,6 +402,7 @@ def cmd_commands(conn, args):
             ts(r["last_used"])] for r in rows]
     print(table(["command", "calls", "sessions", "last used"], cur,
                 aligns=["<", ">", ">", "<"]))
+    _print_note(note)
     return 0
 
 
@@ -455,13 +485,19 @@ def cmd_show(conn, args):
         print(f"  {_SHOW_LABELS.get(key, key):<18} "
               f"{_fmt_field(key, summary[key], summary)}")
     print()
-    rows = db.q_history(conn, kind, name, limit=_limit(args, 20), start_ts=start, end_ts=end)
+    limit = _limit(args, 20)
+    rows = db.q_history(conn, kind, name, limit=limit, start_ts=start, end_ts=end)
     if not rows:
         print("  (no calls in this window)")
     for row in rows:
         print("  " + "  ".join(
             f"{_SHOW_LABELS.get(k, k)}={_fmt_field(k, row[k], row)}"
             for k in row.keys() if k not in _INTERNAL_FIELDS))
+    # The summary's own count is the total, so this one needs no second query.
+    total = summary["calls"] or 0
+    if total > len(rows):
+        _print_note(f"  showing {fmt_n(len(rows))} of {fmt_n(total)} calls"
+                    " — raise --limit for the rest")
     return 0
 
 

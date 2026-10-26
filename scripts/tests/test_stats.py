@@ -499,6 +499,47 @@ class StatsReportTest(unittest.TestCase):
         self.assertEqual([line.split()[1] for line in body(out)], ["demo-plugin"])
         self.assertNotIn("Bash", out, "--kind plugin must filter the tools out")
 
+    def test_a_truncated_report_says_how_many_rows_it_left_out(self):
+        """`--limit` used to cut the list and say nothing.
+
+        `show` printed its first 20 calls and the entity tabs their first 50
+        rows, with no hint that the list was partial — the report read as the
+        whole answer. Each now names the total behind a blank line, so the note
+        is not mistaken for a row.
+        """
+        rc, out, err = run("--db", self.t.db_path, "show", "tool", "Bash",
+                           "--limit", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("showing 1 of 2 calls", out)
+        rc, out, err = run("--db", self.t.db_path, "tools", "--limit", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(body(out)), 1, "the note must not read as a row")
+        self.assertIn("showing 1 of 3 tools", out)
+        # Control: a report that shows everything says nothing about a limit.
+        rc, out, err = run("--db", self.t.db_path, "tools")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("showing", out)
+
+    def test_the_project_reports_say_when_they_left_rows_out(self):
+        """Both project reports truncate: the board and one project's sessions."""
+        conn = db.open_db(self.t.db_path)
+        conn.executemany(
+            "INSERT INTO model_calls(message_id, session_id, project, ts,"
+            " model, provider, input_tokens, output_tokens, has_usage)"
+            " VALUES(?,?,?,?,'ark-code-latest','Volcano ARK',1,1,1)",
+            [("m2", "s2", "/work/demo", m(5)),
+             ("m3", "s3", "/work/other", m(6))])
+        conn.commit()
+        conn.close()
+        rc, out, err = run("--db", self.t.db_path, "projects", "/work/demo",
+                           "--limit", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("showing 1 of 2 sessions", out)
+        rc, out, err = run("--db", self.t.db_path, "projects", "--limit", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(body(out)), 1, "the note must not read as a row")
+        self.assertIn("showing 1 of 2 projects", out)
+
     def test_export_dumps_every_indexed_table_as_json(self):
         rc, out, err = run("--db", self.t.db_path, "export")
         self.assertEqual(rc, 0, err)
