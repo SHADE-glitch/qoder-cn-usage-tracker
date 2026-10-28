@@ -274,7 +274,7 @@ name_cap = 28        # 表格渲染单元格的最宽字符数
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 424 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 426 tests ... OK
 ```
 
 测试套件是 `unittest`（`pytest` 也能发现它们）。其中两套需要安装 `textual`：`test_tui.py`，以及 `test_config.py`——后者的接线用例会把 TUI 模块加载起来，用以证明每个设置项真的到达渲染器。每个套件都在临时目录里自建一次性数据库**以及**一次性 Qoder 目录树——你真实的 `usage.db` 与 `~/.qoder-cn` 从不会被打开，仓库中也没有任何代码路径会访问网络。
@@ -294,7 +294,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 424 tests ... OK
 | `test_maintenance_docs.py` | 11 | 生成的格式文档等于 `qcut format` 今天打印的内容、每个维护资产都能从路由文档抵达、每条链接都能解析，以及 CI 矩阵钉住的正是 `pyproject.toml` 声明的下限 |
 | `test_hermetic.py` | 14 | 让套件远离真实数据库和 Qoder 主机目录的绊线：受保护路径会被拒绝，临时路径可放行，子进程钩子端到端生效，要求子进程钉上 `QCUT_DB` 与 `QCUT_QODER_DIR`，以及加载器默认打开的那个设置文件同样受保护 |
 | `test_readme_counts.py` | 6 | 两份 README 里每一个用例数字——每行、每个总数——都等于从套件语法树上读下来的数量；盘上有套件却没有对应行，与行指向已删除的文件，同样判红 |
-| `test_readme_bilingual.py` | 7 | 两份 README 是同一份文档的两种语言：标题表情符号序列与其顺序必须一致，因此任何一侧单独增 / 删 / 移动小节都会判红；每条页内链接都指向真实标题 |
+| `test_readme_bilingual.py` | 9 | 两份 README 是同一份文档的两种语言：标题表情符号序列与其顺序必须一致，因此任何一侧单独增 / 删 / 移动小节都会判红；每条页内链接都指向真实标题；每份入库页面里的每个相对链接也都指向真实存在的东西，`#片段` 同样要落得到 |
 | `test_record_coverage.py` | 6 | 改动生产脚本的提交必须在 `CHANGELOG.md` 里留下 `D-###` 条目；覆盖窗口从 `git log` 枚举而非手打，编号必须连续无缺，且每个被引用的哈希都要能解析 |
 | `test_conventions.py` | 9 | A 档根文件层是否在根目录齐备、AGENTS.md 是否用一行指明档位而不是抄规范正文，以及忽略清单覆盖的运行态是否真的没有被跟踪 |
 
@@ -310,7 +310,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-sync.py` | 转录解析器与增量索引器（`--full`、`--quiet`） |
 | `scripts/qcut-stats.py` | 无头报表 |
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
-| `scripts/tests/` | 上述 424 个用例 |
+| `scripts/tests/` | 上述 426 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |

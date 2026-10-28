@@ -185,11 +185,11 @@ TZ=UTC .venv/bin/python -m unittest discover -s scripts/tests
 | `test_hermetic.py` | 14 |
 | `test_privacy.py` | 15 |
 | `test_dispatcher.py` | 9 |
-| `test_readme_bilingual.py` | 7 |
+| `test_readme_bilingual.py` | 9 |
 | `test_readme_counts.py` | 6 |
 | `test_record_coverage.py` | 6 |
 | `test_conventions.py` | 9 |
-| **total** | **424** |
+| **total** | **426** |
 
 Wall time is dominated by Textual's harness: `test_tui.py` alone is the bulk of
 the run, the other fifteen together a few seconds.

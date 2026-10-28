@@ -23,14 +23,16 @@ files make them hollow or hostile:
   ``test_readme_counts.py`` owns exactly those.
 
 stdlib ``unittest`` only, so it runs on a bare interpreter without ``textual`` and
-under both ``python3 -m unittest discover -s scripts/tests`` and pytest. The suite
-reads four repository markdown files and nothing else: no database, no ``~/.qoder-cn``,
-no temp tree.
+under both ``python3 -m unittest discover -s scripts/tests`` and pytest. The pair cases
+read the two READMEs; the link sweep at the end reads every tracked ``.md``. Nothing
+here opens a database, ``~/.qoder-cn``, or a temp tree.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 import sys
@@ -64,6 +66,11 @@ FENCE = re.compile(r"^```[^\n]*\n.*?^```[ \t]*$\n?", re.M | re.S)
 # Stripping them too (the obvious regex) reports every emoji heading as a dead link:
 # a false positive on all 17 sections of each page.
 _ANCHOR_KEEP = re.compile(r"[^\w \-️‍]+", re.U)
+# A heading is not the only way to mint an anchor: `<a name="x"></a>` above a heading
+# pins a fragment that survives a retranslation, which is how ocut keeps one
+# `#known-limitations` working across both of its languages. A guard that read only
+# headings would call such a link dead.
+EXPLICIT_ANCHOR = re.compile(r"<[a-z][^>]*?\b(?:name|id)\s*=\s*[\"']([^\"']+)[\"']", re.I)
 
 
 def read(path):
@@ -103,7 +110,59 @@ def markers(text, level=2):
 
 
 def heading_anchors(text):
-    return {anchor_of(title) for _lv, _m, title, _b in sections(text)}
+    """Every anchor the page mints: one per heading, plus any explicit ``<a name>``."""
+    body = prose(text)
+    return ({anchor_of(title) for _lv, _m, title, _b in sections(text)}
+            | set(EXPLICIT_ANCHOR.findall(body)))
+
+
+EXTERNAL = ("http://", "https://", "mailto:", "ftp://")
+LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+
+def documents():
+    """Every tracked Markdown file, as absolute paths."""
+    out = subprocess.run(["git", "ls-files", "*.md"], cwd=REPO,
+                         capture_output=True, text=True, check=True)
+    return [REPO / name for name in out.stdout.split() if (REPO / name).is_file()]
+
+
+def links_of(text):
+    """The target of every inline link in ``text``, fenced blocks removed."""
+    return LINK.findall(prose(text))
+
+
+def broken_links(docs, root=REPO):
+    """Every relative link that points at nothing, and every fragment that misses.
+
+    ``root`` is the boundary a link may not leave: a target outside it belongs to
+    another repository. The control case passes its own temporary directory.
+    """
+    anchors = {}
+    problems = []
+    for src in docs:
+        for target in links_of(read(src)):
+            if target.startswith(EXTERNAL) or target.startswith("<"):
+                continue
+            path, _, fragment = target.partition("#")
+            dest = (src.parent / path).resolve() if path else src.resolve()
+            try:
+                dest.relative_to(root)
+            except ValueError:
+                continue
+            if not dest.exists():
+                problems.append("%s: %s -> no such file"
+                                % (src.relative_to(root), target))
+                continue
+            if not fragment or dest.is_dir() or dest.suffix != ".md":
+                continue  # a directory or a source file: no headings to land on
+            if dest not in anchors:
+                anchors[dest] = heading_anchors(read(dest))
+            if fragment not in anchors[dest]:
+                problems.append("%s: %s -> %s has no heading `%s`"
+                                % (src.relative_to(root), target,
+                                   dest.relative_to(root), fragment))
+    return problems
 
 
 def dead_anchors(text):
@@ -222,6 +281,43 @@ class ReadmeBilingualTest(unittest.TestCase):
         expected, listed = toc_drift(drifted)
         self.assertEqual((expected, listed), (["✨", "🧹"], ["✨"]),
                          "the checker cannot see a TOC that lost a section")
+
+    def test_every_relative_link_in_every_document_resolves(self):
+        """The pair's own links are checked above; this is every link in every page.
+
+        A cross-file anchor is the case the pair check cannot see: a README points
+        into ``docs/maintenance/compatibility.md#codebuddy``, and renaming that
+        heading leaves every *in-page* link in the repository resolving. Nothing
+        noticed until the sweep below existed.
+        """
+        problems = broken_links(documents())
+        self.assertEqual([], problems,
+                         "a document points at something that is not there:\n  "
+                         + "\n  ".join(problems))
+
+    def test_the_link_checker_can_report_a_break(self):
+        """Control: a missing file, a missed fragment, and links that are fine."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "target.md").write_text("## Real\n", encoding="utf-8")
+            page = root / "page.md"
+            page.write_text(
+                "## Real\n\n"
+                "[ok](#real)\n"
+                "[across](target.md#real)\n"
+                "[dead](#nowhere)\n"
+                "[nofile](missing.md)\n"
+                "[nofrag](target.md#nowhere)\n"
+                "\n```\n[fenced](#nowhere)\n```\n",
+                encoding="utf-8")
+            problems = broken_links([page], root=root)
+
+        self.assertEqual(
+            ["page.md: #nowhere -> page.md has no heading `nowhere`",
+             "page.md: missing.md -> no such file",
+             "page.md: target.md#nowhere -> target.md has no heading `nowhere`"],
+            problems,
+            "the checker missed a break, invented one, or read a fenced example as a link")
 
 
 if __name__ == "__main__":
