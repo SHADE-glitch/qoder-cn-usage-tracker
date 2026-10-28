@@ -195,7 +195,7 @@ qcut sync             # 从已有的 Qoder CN 转录建立索引
 qcut                  # 启动 TUI
 ```
 
-> **升级已有索引？** schema v3 在索引首次打开时原地修复 v2 留下的命令、技能名与直连 MCP 行。v2 的代理 run 关联字段（`parent_call_id`、`agent_id`）仍需完整重读才能回填，所以从旧索引升级后请运行一次 **`qcut sync --full`**；它会先给旧索引做快照。全新安装无需额外步骤。
+> **升级已有索引？** schema v4 新增 `skill_reads`（直接读 `SKILL.md`），并在升级时释放同步游标，所以下一次 `qcut sync` 会重读转录把它们补上。schema v3 在索引首次打开时原地修复 v2 留下的命令、技能名与直连 MCP 行。v2 的代理 run 关联字段（`parent_call_id`、`agent_id`）仍需完整重读才能回填，所以从旧索引升级后请运行一次 **`qcut sync --full`**；它会先给旧索引做快照。全新安装无需额外步骤。
 
 不想用 venv？无头报表用普通 `python3` 即可：
 
@@ -274,14 +274,14 @@ name_cap = 28        # 表格渲染单元格的最宽字符数
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 426 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 428 tests ... OK
 ```
 
 测试套件是 `unittest`（`pytest` 也能发现它们）。其中两套需要安装 `textual`：`test_tui.py`，以及 `test_config.py`——后者的接线用例会把 TUI 模块加载起来，用以证明每个设置项真的到达渲染器。每个套件都在临时目录里自建一次性数据库**以及**一次性 Qoder 目录树——你真实的 `usage.db` 与 `~/.qoder-cn` 从不会被打开，仓库中也没有任何代码路径会访问网络。
 
 | 套件 | 用例数 | 覆盖范围 |
 |---|---:|---|
-| `test_sync.py` | 74 | 转录解析、归类（工具 / 技能 / 代理 / MCP，含直接以 `mcp__server__tool` 为工具名的形态）、路由来源、清单、增量与全量重建、被改写或结尾未换行的转录、带时间戳的状态配对、未认领记录统计、`model_calls` 只在真正插入时计数一次、Skill 结果自带的 `commandName` 不会被当成斜杠命令、生成的格式文档包含 token 捕获小节、schema 里**每一张表**的幂等性、sidechain 回复只经 Qoder 自己的 `parent_tool_use_id` 关联到发起它的 run、只解析 `compact_boundary` 的元数据而不碰其正文、读不了的转录会被报告并在下次重试、同样的记录被重写一次不会重复计数、只带一条 runtime-config 的会话仍然留住它的模型、一条记录里的两个技能算两次调用、更新的 schema 在每个入口都被拒绝、崩溃安全 |
+| `test_sync.py` | 76 | 转录解析、归类（工具 / 技能 / 代理 / MCP，含直接以 `mcp__server__tool` 为工具名的形态）、路由来源、清单、增量与全量重建、被改写或结尾未换行的转录、带时间戳的状态配对、未认领记录统计、`model_calls` 只在真正插入时计数一次、Skill 结果自带的 `commandName` 不会被当成斜杠命令、生成的格式文档包含 token 捕获小节、schema 里**每一张表**的幂等性、sidechain 回复只经 Qoder 自己的 `parent_tool_use_id` 关联到发起它的 run、只解析 `compact_boundary` 的元数据而不碰其正文、读不了的转录会被报告并在下次重试、同样的记录被重写一次不会重复计数、只带一条 runtime-config 的会话仍然留住它的模型、一条记录里的两个技能算两次调用、更新的 schema 在每个入口都被拒绝、崩溃安全 |
 | `test_cross_repo_golden.py` | 17 | 跨仓 golden fixture：一组固定输入（NULL / 部分上报 / cache 列缺失的 token 行、不同 model 拼写、本地午夜与跨小时边界、2026 年两个美国夏令时切换日）经过本仓自己的 Usage Total 表达式、窗口聚合、模型 rollup、日期时间输入与自然日窗口，钉在与 cbut、ocut 共享的权威文件上 |
 | `test_usage.py` | 74 | 自然日窗口、供应商标签、缓存命中率、全部查询辅助函数、「已安装 ∪ 用过」并集、区分真实测量与历史零值的 token 标记、按供应商与工具过滤的历史、斜杠命令排行、把「实体不存在」与「本窗口内没用过」分开的判定、只通过显式链接触发的 run 成本聚合、run 的 Usage Total 先按响应判定再求和、项目 / 会话 / 请求三级账本、压缩摘要及其上下文税、schema（含增量 v1→v2 迁移与 v3 的命令/技能/MCP 修复）、最小版的 snapshot→list→restore 往返、尚无数据库的全新安装、没有任何测试之外的调用方的查询，以及无头报表的措辞 |
 | `test_stats.py` | 59 | 无头 CLI 的端到端：每个子命令都真的调用 `main([...])`，`--db`、`--limit` 与 `--all`、只读连接、索引过期时的拒绝并指出修法、`export` / `inventory` / `recent` / `show` / `health`、`agents` 与 `projects` 账本（包括从未存在过的项目）、`commands` 报表、`env` 在开关设置与未设置两种情况下的输出、在临时库上跑 `vacuum`（快照、`quick_check`、行数不变）、损坏设置文件报成一句话而不是抛栈、`backup`/`restore` 这一对、`format --write` 只在标记之间重写并**拒绝**追加进丢了标记的文档、`show` 拒绝从没见过这个名字（而不是画成一片零）、索引真实覆盖的时间跨度，`--limit` 会说出它少给了多少行，以及入口脚本绝不碰它没被给过的路径 |
@@ -310,7 +310,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-sync.py` | 转录解析器与增量索引器（`--full`、`--quiet`） |
 | `scripts/qcut-stats.py` | 无头报表 |
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
-| `scripts/tests/` | 上述 426 个用例 |
+| `scripts/tests/` | 上述 428 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |

@@ -21,7 +21,7 @@ import re
 import sqlite3
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qcut_db as db  # noqa: E402
@@ -199,9 +199,11 @@ TOOL_RESULT_META_FIELDS = frozenset({"kind", "isError", "commandName"})
 # privacy line, and only these are ever stored — the skill name, the agent type
 # and the MCP target, all of which are catalog entries rather than prose.
 # `command` and `tool_name` are the snake_case aliases the same two tools answer
-# to, so they are read as often as `skill` / `toolName`.
+# to, so they are read as often as `skill` / `toolName`. `file_path` is read only
+# to recognise a direct read of `.../SKILL.md`; the path is dropped and the skill
+# name is the card's parent directory.
 TOOL_ARG_FIELDS = frozenset({"skill", "command", "subagent_type", "agent_type",
-                             "toolName", "tool_name"})
+                             "toolName", "tool_name", "file_path"})
 # JSON keys of the non-transcript files we read: the inventory files plus
 # settings.json (whose providers[].baseUrl gives a custom route its vendor).
 INVENTORY_JSON_FIELDS = frozenset({
@@ -592,6 +594,41 @@ def _record_compaction(conn, rec, ts, project, counts) -> None:
         _bump(counts, "compactions")
 
 
+_VERSION_DIR = re.compile(r"\d+(?:\.\d+)*")
+
+
+def _skill_read_name(path) -> str | None:
+    """The skill a ``Read .../SKILL.md`` names; None for any other file.
+
+    Qoder's Read tool takes ``file_path``. A card under a skills root is ``skills/<name>/SKILL.md``; a plugin
+    whose manifest sits at its install root is ``<plugin>/<version>/SKILL.md``
+    (the version is a directory, not a name). Nothing else is read out of the path.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    p = PurePosixPath(path)
+    if p.name != "SKILL.md":
+        return None
+    parts = p.parts
+    parent = p.parent
+    if parent.name == DIR_SKILLS:
+        # A plugin can ship one skill as `skills/SKILL.md`; the card is the
+        # plugin, not the folder. A bare `.agents/skills/SKILL.md` names none.
+        up = parent.parent
+        name = up.name
+        if not name or name.startswith(HIDDEN_NAME_PREFIX):
+            return None
+        if _VERSION_DIR.fullmatch(name) or name == "unknown":
+            name = up.parent.name
+        return name or None
+    if len(parts) >= 3 and parts[-3] == DIR_SKILLS:
+        return parts[-2] or None
+    name = parent.name
+    if name and (_VERSION_DIR.fullmatch(name) or name == "unknown"):
+        return parent.parent.name or None
+    return name or None
+
+
 def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None:
     call_id = block.get("id")
     name = block.get("name")
@@ -616,6 +653,16 @@ def _record_tool_use(conn, rec, block, ts, project, skill_owner, counts) -> None
     # rowcount, not "a record was seen": a re-read file re-states every call it
     # holds, and the summary must report what this pass *added*.
     _bump(counts, "tool_calls", cur.rowcount)
+
+    if name.casefold() == "read":
+        skill = _skill_read_name(args.get("file_path"))
+        if skill:
+            conn.execute(
+                "INSERT OR IGNORE INTO skill_reads"
+                "(call_id, skill, session_id, project, ts, status, duration_ms)"
+                " VALUES(?,?,?,?,?,NULL,NULL)",
+                (call_id, skill, sid, project, ts),
+            )
 
     if category == "skill":
         reported = payload or ""
@@ -680,6 +727,12 @@ def _record_tool_result(conn, rec, block, ts, project, counts) -> None:
     )
     conn.execute(
         "UPDATE skill_usage SET status = ?, duration_ms = CASE "
+        "  WHEN ts IS NULL OR ? IS NULL OR ? < ts THEN NULL ELSE ? - ts END "
+        "WHERE call_id = ? AND status IS NULL",
+        (status, ts, ts, ts, call_id),
+    )
+    conn.execute(
+        "UPDATE skill_reads SET status = ?, duration_ms = CASE "
         "  WHEN ts IS NULL OR ? IS NULL OR ? < ts THEN NULL ELSE ? - ts END "
         "WHERE call_id = ? AND status IS NULL",
         (status, ts, ts, ts, call_id),

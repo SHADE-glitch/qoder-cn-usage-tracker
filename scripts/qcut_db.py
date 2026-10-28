@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # The Qoder CN CLI writes real token fields only when this variable is set in
 # the CLI process's environment. qcut never sets it: it only reads what the CLI
@@ -272,6 +272,20 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     duration_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_skill_name ON skill_usage(skill);
+
+-- A direct Read of a skill card is not a Skill tool call: it has no plugin and
+-- no ok/fail verdict of its own. Kept in its own table so the invocation counts
+-- above keep their meaning. `skill` is the parent dir, or the plugin above a
+-- <version>/ dir; the path itself is never stored.
+CREATE TABLE IF NOT EXISTS skill_reads (
+    call_id     TEXT PRIMARY KEY,
+    skill       TEXT,
+    session_id  TEXT,
+    project     TEXT,
+    ts          INTEGER,
+    status      TEXT,
+    duration_ms INTEGER
+);
 
 -- Subagents are launched through the `Agent` tool; `agent_type` is that call's
 -- own `subagent_type` (Explore / Plan / general-purpose). The free-text
@@ -858,6 +872,12 @@ def ensure_schema(conn: sqlite3.Connection) -> str:
                   ("plugin", "kind", "target", "session_id", "ts", "call_id"),
                   unique=True)
     if 0 < current < SCHEMA_VERSION:
+        # v4 adds skill_reads, and the reads are already in transcripts the
+        # incremental cursor has passed. Clearing the cursor makes the next sync
+        # re-read them; every writer is keyed on the host's own id and INSERT OR
+        # IGNORE/REPLACE, and `unparsed` is replaced per source, so the re-read
+        # is an upsert rather than a duplicate.
+        conn.execute("DELETE FROM sync_state")
         _repair_v3(conn)
     conn.executescript(VIEWS_SQL)
     conn.execute(
@@ -887,9 +907,9 @@ def migrate(path: Path | str = DB_PATH) -> str:
 
 def reset(conn: sqlite3.Connection) -> None:
     """Empty every indexed table so ``sync --full`` can rebuild from scratch."""
-    for table in ("model_calls", "tool_calls", "skill_usage", "agent_usage",
-                  "mcp_usage", "plugin_usage", "commands", "compactions",
-                  "sessions", "sync_state", "unparsed"):
+    for table in ("model_calls", "tool_calls", "skill_usage", "skill_reads",
+                  "agent_usage", "mcp_usage", "plugin_usage", "commands",
+                  "compactions", "sessions", "sync_state", "unparsed"):
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
 
@@ -2259,8 +2279,8 @@ def overview(conn) -> dict:
     """Row counts for every indexed table — what `qcut health` prints."""
     out = {}
     for table in ("sessions", "model_calls", "tool_calls", "skill_usage",
-                  "agent_usage", "mcp_usage", "plugin_usage", "commands",
-                  "compactions", "inventory", "sync_state", "unparsed"):
+                  "skill_reads", "agent_usage", "mcp_usage", "plugin_usage",
+                  "commands", "compactions", "inventory", "sync_state", "unparsed"):
         try:
             out[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except sqlite3.OperationalError:
@@ -2292,8 +2312,9 @@ def q_overview(conn) -> dict:
     # table alone hides work recorded in another. `sessions` is left out on purpose
     # — its own span lives in `started_at`/`ended_at`, not in a `ts` column.
     lo = hi = None
-    for table in ("model_calls", "tool_calls", "skill_usage", "agent_usage",
-                  "mcp_usage", "plugin_usage", "commands", "compactions"):
+    for table in ("model_calls", "tool_calls", "skill_usage", "skill_reads",
+                  "agent_usage", "mcp_usage", "plugin_usage", "commands",
+                  "compactions"):
         try:
             row = conn.execute(f"SELECT MIN(ts), MAX(ts) FROM {table}").fetchone()
         except sqlite3.OperationalError:

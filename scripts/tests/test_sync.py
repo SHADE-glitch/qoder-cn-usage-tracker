@@ -305,6 +305,37 @@ class EntityClassificationTest(unittest.TestCase):
         self.assertEqual(row["skill"], "playwright-cli")
         self.assertEqual(row["status"], "completed")
 
+    def test_a_skill_card_read_is_recorded_in_skill_reads(self):
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "Read",
+                         file_path="/home/u/.agents/skills/code-review/SKILL.md"),
+                # <plugin>/<version>/SKILL.md: the version is not the skill.
+                tool_use("c2", "Read",
+                         file_path="/x/plugins/agent-browser/1.3.0/SKILL.md"),
+                # <plugin>/skills/SKILL.md: the card is the plugin.
+                tool_use("c3", "Read",
+                         file_path="/x/plugins/playwright-cli/skills/SKILL.md")]),
+            tool_result("r1", "c1", kind="completed"),
+        ])
+        self.t.sync()
+        reads = {r["skill"]: r for r in self.t.rows("SELECT * FROM skill_reads")}
+        self.assertEqual(set(reads),
+                         {"agent-browser", "code-review", "playwright-cli"})
+        self.assertEqual(reads["code-review"]["status"], "completed")
+        self.assertEqual(reads["code-review"]["duration_ms"], 5000)
+        self.assertEqual(self.t.rows("SELECT * FROM skill_usage"), [])
+
+    def test_a_read_of_anything_else_is_not_a_skill_read(self):
+        self.t.write("projects/-work-demo/s1.jsonl", [
+            assistant("s1", "m1", content=[
+                tool_use("c1", "Read", file_path="/x/README.md"),
+                tool_use("c2", "Read",
+                         file_path="/x/skills/tdd/references/x.md")]),
+        ])
+        self.t.sync()
+        self.assertEqual(self.t.rows("SELECT * FROM skill_reads"), [])
+
     def test_a_skill_named_in_the_command_argument_is_still_recorded(self):
         """`_classify` reads `skill` *or* `command` — the alias branch, which is a
         claimed part of the format and so needs a case that goes through it.

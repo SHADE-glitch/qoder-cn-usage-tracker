@@ -30,7 +30,7 @@ a Qoder update; the procedure is in [`MAINTENANCE.md`](../../MAINTENANCE.md).
 - tool_result: content, is_error, tool_use_id, type
 - toolUseResult: commandName, isError, kind
 - compactMetadata: durationMs, messagesSummarized, postTokens, preTokens, trigger
-- tool arguments: agent_type, command, skill, subagent_type, toolName, tool_name
+- tool arguments: agent_type, command, file_path, skill, subagent_type, toolName, tool_name
 - inventory JSON: baseUrl, installPath, mcpServers, plugins, providers, source, version
 
 ## Token capture (environment)
