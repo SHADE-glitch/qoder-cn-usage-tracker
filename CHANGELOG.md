@@ -807,3 +807,15 @@ Cost     A test that opens a file under `~/.config/qcut` without pinning `QCUT_C
          rather than silently allowed — which is the point, but it is a new way for an unrelated suite
          to fail after someone adds a config read.
 Commit   d799e78 63c41b2
+
+### D-040 · 2026-11-07 · taste
+Symptom   The README pair had a table of contents, but the four mechanism sections sat between the tab
+          walkthrough and the requirements, so a reader met the token and credit rules after the tabs
+          that display them — the order the sibling tracker already fixed.
+Change    Token capture and Credits vs tokens move up beside How it works, so both READMEs run
+          concept before walkthrough before install; the table of contents is regenerated from the
+          headings each side actually carries.
+Evidence  L0 2026-11-07 `python3 -m pytest scripts/tests -q` green; the layout audit reports this
+          repository compliant; every anchor in the regenerated contents resolves.
+Cost      The two sections' positions change; their text and every claim in them are untouched.
+Commit    ff139f6
