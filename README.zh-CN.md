@@ -9,11 +9,17 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
-
 **是什么** —— 一个针对 [Qoder CN CLI](https://qoder.com.cn) 的被动追踪器，**模仿 `cbut`**（同族的 [codebuddy-usage-tracker](https://github.com/SHADE-glitch/codebuddy-usage-tracker)）：八标签页 TUI 与无头报告，覆盖你用到的每一个工具、技能、子代理、插件、MCP 服务与模型，以及它们各自花掉的 token 与积分。它只读 Qoder 的文件，只写自己的本地索引。
 
 **解决什么** —— Qoder CN CLI 每个会话、每次子代理运行各写一个转录文件；`qcut` 把它们归并进一个本地 SQLite 文件，让用量、token 与积分一目了然——并分清「真实的零」与「路由根本没上报 token」。
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+
+<p align="center"><em><b>仪表盘</b> —— Qoder CN CLI 的用量一个窗口看完：工具、skill、agent、插件、MCP 调用，以及各自的 token 与额度。演示索引，不含真实机器数据。</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Qoder CN 用量索引的八种切法；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
 
 **怎么跑** —— `./install.sh`，然后 `qcut sync`。
 
@@ -99,10 +105,6 @@ Qoder CN 的 CLI 其实**已经写下了**你需要的数据——只是从不**
 `qcut` 是**被动读取者**：它只解析 Qoder 已经写下的文件并建立索引。它不碰 Qoder 的文件、不安装 hook、不给宿主增加任何运行时开销。
 
 ## 📊 八个标签页
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Qoder CN 用量索引的八种切法；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
 
 打开即是**仪表盘**：一眼看清关键数字。标签页上方有一条共享的顶栏承载范围选择器与 📅 控件，**每个标签各存自己的范围**。**插件**页没有窗口——安装与否是既定事实，所以两个控件在那里都隐藏。窗口改变**计数**与显示哪些实体行，但绝不删除历史。选择 **Custom…** 或按 📅 会打开日期区间选择器，其 Confirm 只把选中的起止时间应用到当前标签。
 

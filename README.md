@@ -9,11 +9,17 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
-
 **What it is** — A passive tracker for the [Qoder CN CLI](https://qoder.com.cn), **modeled on `cbut`** (the sibling [codebuddy-usage-tracker](https://github.com/SHADE-glitch/codebuddy-usage-tracker)): an eight-tab TUI and headless reports over every tool, skill, subagent, plugin, MCP server and model you use, plus the tokens and credits each one cost. It reads Qoder's files only and writes only its own local index.
 
 **What it solves** — the Qoder CN CLI writes one transcript per session and per subagent run; `qcut` folds them into one local SQLite file so usage, tokens and credits are visible in one place — and tells a measured zero apart from a route that never reported a token.
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+
+<p align="center"><em><b>The dashboard</b> — the Qoder CN CLI's usage in one window: tools, skills, agents, plugins, MCP calls, and the tokens and credits each of them cost. Demo index, no real machine.</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Qoder CN usage cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
 **How to run** — `./install.sh`, then `qcut sync`.
 
@@ -120,10 +126,6 @@ builds an index. It never touches Qoder's files, installs no hook, and adds no
 runtime overhead to the host.
 
 ## 📊 The eight tabs
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Qoder CN usage cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
 The **Dashboard** opens first: an at-a-glance summary of the important numbers.
 A shared top bar above the tabs carries the range selector and the 📅 control,
