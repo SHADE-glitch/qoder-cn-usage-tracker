@@ -121,7 +121,9 @@ runtime overhead to the host.
 
 ## 📊 The eight tabs
 
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Switching the window and opening a tab" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Qoder CN usage cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
 The **Dashboard** opens first: an at-a-glance summary of the important numbers.
 A shared top bar above the tabs carries the range selector and the 📅 control,
