@@ -37,10 +37,10 @@
 - [🤔 Why this exists](#-why-this-exists)
 - [🧬 Relationship to cbut](#-relationship-to-cbut)
 - [🏗️ How it works](#️-how-it-works)
-- [📊 The eight tabs](#-the-eight-tabs)
-- [⌨️ Keyboard](#️-keyboard)
 - [🔑 Token capture](#-token-capture)
 - [💳 Credits vs tokens](#-credits-vs-tokens)
+- [📊 The eight tabs](#-the-eight-tabs)
+- [⌨️ Keyboard](#️-keyboard)
 - [📋 Requirements](#-requirements)
 - [🚀 Install](#-install)
 - [🧭 Usage](#-usage)
@@ -125,67 +125,6 @@ the question; matching cbut's screen is not.
 builds an index. It never touches Qoder's files, installs no hook, and adds no
 runtime overhead to the host.
 
-## 📊 The eight tabs
-
-The **Dashboard** opens first: an at-a-glance summary of the important numbers.
-A shared top bar above the tabs carries the range selector and the 📅 control,
-and **each tab keeps its own range**. The **Plugins** tab has no window at all —
-an install fact is always all-time — so both controls are hidden there. A window
-changes the **counts** and which entity rows are shown; it never deletes history.
-Choosing **Custom…** or pressing 📅 opens the date-range picker, whose Confirm
-button applies the picked start/end to the active tab only.
-
-| | Tab | What it shows |
-|---|-----|---------------|
-| 🧭 | **Dashboard** | a Usage panel (requests, credits, sessions, projects, builtin calls, skills, agent runs, MCP, plugins), a Tokens panel (usage total · input · output · credits · cache hit rate), a Cache panel, Top models, Top tools, and the **project board** (requests · usage total · credits · peak ctx · last used) — all for the Dashboard's own window. The runtime row and the per-day calls sparkline were removed: the failure split lives on the Tools tab and peak context / compactions are one Enter away on the project screen. The board grows with its rows and takes the height the rows above leave, so the dashboard ends at the status line; the pane scrolls once a long project list no longer fits |
-| 🧰 | **Tools** | builtin tool calls by name: calls · ok · fail · pending · average duration · last used |
-| 🎯 | **Skills** | skill invocations by name: calls · ok · fail · owning plugin · last used |
-| 🤖 | **Agents** | subagent types: **runs · ok · fail · linked requests · usage total · credits · peak context · last used**; a run with no linked response reads `0` requests and `-` tokens |
-| 🧩 | **Plugins** | every plugin — installed **and** ever used — with source, version, attributed uses and installed resources; all-time |
-| 🔌 | **MCP** | MCP targets: server · tool · calls · ok · fail · average duration · last used; an admin op shows `(admin)` |
-| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **usage total · credits · requests**, input / output, cache hit / miss / write, cache hit rate, last used |
-| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **usage total · credits** · input · output · cache hit / miss / write · cache hit rate. <kbd>Enter</kbd> opens that exact call |
-
-`Provider` is one column, not a family plus a name: Qoder's own route reads
-`Built-in`, and a BYOK/third-party call shows the channel that served it.
-
-**Entity tabs default to the rows used in their window — the same boundary the
-Tokens tab has always had.** Press <kbd>a</kbd> to switch to the installed ∪
-ever-used set (the filter note says how many rows are hidden); Plugins is always
-the full install ledger. Tokens and Usage are ranked by **usage total, then
-credits**; Top tools by call count.
-
-A table never shows a half column: each table keeps the longest **prefix** of its
-columns that fits and names the dropped ones on the note line above it, so a
-narrow terminal costs columns, not legibility.
-
-## ⌨️ Keyboard
-
-The tab bar and footer are the whole key surface, and the same keys work in the
-sibling `ocut` and `cbut` trackers.
-
-| Key | Action |
-|---|---|
-| `q` | quit |
-| `r` | sync now — one incremental sync, then reload the screen |
-| `s` | cycle the active tab's sort order; the note above the table names it |
-| `a` | on Tools / Skills / Agents / MCP, show the installed ∪ ever-used rows |
-| `/` | filter the active tab; the bar stays visible while a filter is applied, `enter` returns to the table, `escape` clears it |
-| `d` | pick the active tab's time window |
-| `tab` / `shift+tab` | next / previous tab |
-| `enter` / double-click | open the selected row's detail screen |
-| `escape` / `q` | clear the active filter, or go back from a pushed detail screen |
-
-The TUI runs **one** incremental sync when it opens and then stops: no timer
-redraws the page, and no background sync writes to the index. New rows arrive
-through `r` or by reopening the TUI. A filter edit starts the list at its first
-match, and the note line above each table names the active sort and the filter
-count. Usage filters and ranks in SQL over the whole window — not only the
-visible page — so `log_limit` caps the output without hiding matches.
-
-Pushed detail screens own their keys: the app-level shortcuts go quiet there and
-the screen's own `escape`/`q` Back remains.
-
 ## 🔑 Token capture
 
 Qoder CN's CLI reads one environment variable when **it** starts:
@@ -255,6 +194,67 @@ Two further notes on the arithmetic:
   `API total = input + output` column was removed with it).
 - **Cache hit rate = cache read ÷ (read + miss + write)**, the cacheable input that
   the three parts partition. `-` when there is no cache data, never a fabricated `0%`.
+
+## 📊 The eight tabs
+
+The **Dashboard** opens first: an at-a-glance summary of the important numbers.
+A shared top bar above the tabs carries the range selector and the 📅 control,
+and **each tab keeps its own range**. The **Plugins** tab has no window at all —
+an install fact is always all-time — so both controls are hidden there. A window
+changes the **counts** and which entity rows are shown; it never deletes history.
+Choosing **Custom…** or pressing 📅 opens the date-range picker, whose Confirm
+button applies the picked start/end to the active tab only.
+
+| | Tab | What it shows |
+|---|-----|---------------|
+| 🧭 | **Dashboard** | a Usage panel (requests, credits, sessions, projects, builtin calls, skills, agent runs, MCP, plugins), a Tokens panel (usage total · input · output · credits · cache hit rate), a Cache panel, Top models, Top tools, and the **project board** (requests · usage total · credits · peak ctx · last used) — all for the Dashboard's own window. The runtime row and the per-day calls sparkline were removed: the failure split lives on the Tools tab and peak context / compactions are one Enter away on the project screen. The board grows with its rows and takes the height the rows above leave, so the dashboard ends at the status line; the pane scrolls once a long project list no longer fits |
+| 🧰 | **Tools** | builtin tool calls by name: calls · ok · fail · pending · average duration · last used |
+| 🎯 | **Skills** | skill invocations by name: calls · ok · fail · owning plugin · last used |
+| 🤖 | **Agents** | subagent types: **runs · ok · fail · linked requests · usage total · credits · peak context · last used**; a run with no linked response reads `0` requests and `-` tokens |
+| 🧩 | **Plugins** | every plugin — installed **and** ever used — with source, version, attributed uses and installed resources; all-time |
+| 🔌 | **MCP** | MCP targets: server · tool · calls · ok · fail · average duration · last used; an admin op shows `(admin)` |
+| 🔢 | **Tokens** | per-model **provider** (`Built-in` for Qoder's own route, otherwise the BYOK channel name), **usage total · credits · requests**, input / output, cache hit / miss / write, cache hit rate, last used |
+| 📊 | **Usage** | the request log, newest first: time · model · **provider** · **usage total · credits** · input · output · cache hit / miss / write · cache hit rate. <kbd>Enter</kbd> opens that exact call |
+
+`Provider` is one column, not a family plus a name: Qoder's own route reads
+`Built-in`, and a BYOK/third-party call shows the channel that served it.
+
+**Entity tabs default to the rows used in their window — the same boundary the
+Tokens tab has always had.** Press <kbd>a</kbd> to switch to the installed ∪
+ever-used set (the filter note says how many rows are hidden); Plugins is always
+the full install ledger. Tokens and Usage are ranked by **usage total, then
+credits**; Top tools by call count.
+
+A table never shows a half column: each table keeps the longest **prefix** of its
+columns that fits and names the dropped ones on the note line above it, so a
+narrow terminal costs columns, not legibility.
+
+## ⌨️ Keyboard
+
+The tab bar and footer are the whole key surface, and the same keys work in the
+sibling `ocut` and `cbut` trackers.
+
+| Key | Action |
+|---|---|
+| `q` | quit |
+| `r` | sync now — one incremental sync, then reload the screen |
+| `s` | cycle the active tab's sort order; the note above the table names it |
+| `a` | on Tools / Skills / Agents / MCP, show the installed ∪ ever-used rows |
+| `/` | filter the active tab; the bar stays visible while a filter is applied, `enter` returns to the table, `escape` clears it |
+| `d` | pick the active tab's time window |
+| `tab` / `shift+tab` | next / previous tab |
+| `enter` / double-click | open the selected row's detail screen |
+| `escape` / `q` | clear the active filter, or go back from a pushed detail screen |
+
+The TUI runs **one** incremental sync when it opens and then stops: no timer
+redraws the page, and no background sync writes to the index. New rows arrive
+through `r` or by reopening the TUI. A filter edit starts the list at its first
+match, and the note line above each table names the active sort and the filter
+count. Usage filters and ranks in SQL over the whole window — not only the
+visible page — so `log_limit` caps the output without hiding matches.
+
+Pushed detail screens own their keys: the app-level shortcuts go quiet there and
+the screen's own `escape`/`q` Back remains.
 
 ## 📋 Requirements
 
