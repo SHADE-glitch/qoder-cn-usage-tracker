@@ -21,6 +21,10 @@
 
 <p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Qoder CN 用量索引的八种切法；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="把时间范围从 30 天切到 7 天，再切到 1 天" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b> 仪表盘从 30 天窗口切到 7 天、再切到 1 天，请求日志与模型表随之收窄。 <b>展示的功能：</b> 顶栏重算这一份 Qoder CN 索引的时间范围，其他标签页仍保留各自的窗口。</em></p>
+
 **怎么跑** —— `./install.sh`，然后 `qcut sync`。
 
 **去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。

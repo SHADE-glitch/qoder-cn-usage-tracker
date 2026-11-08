@@ -21,6 +21,10 @@
 
 <p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Qoder CN usage cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="Switching the time range from 30 days to 7 days and then to 1 day" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the Dashboard moves from a 30-day window to 7 days and then to 1 day; the request log and model table narrow with it. <b>What it shows:</b> a single Qoder CN index re-scoped by the top bar, while the other tabs hold their own windows.</em></p>
+
 **How to run** — `./install.sh`, then `qcut sync`.
 
 **Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
