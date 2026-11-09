@@ -838,3 +838,20 @@ Cost      The list stays a snapshot: this repository's CI cannot read ~/.agents,
           still needs a manual pass here. What watches for that drift now is section 13 of
           ~/.agents/scripts/audit.sh, which reports it instead of waiting for a red build that never arrives.
 Commit    141ca1f
+
+### D-042 · 2026-11-09 · guard
+Symptom   The Chinese README still presented API Total and Usage Total as two totals
+          shown side by side, while the English page and the TUI carry one total only;
+          no guard covered the wording. The three non-token family rules also had no
+          cross-repo guard, so a unilateral drift would pass every per-repo suite.
+Change    Rewrite the Chinese sentence to the single-total rule, add
+          test_the_readmes_name_one_token_total (every line naming the API Total must
+          also say it is retired), add the family_contract rules/variants self-check,
+          and drop the stale "shown next to the API total" comment from qcut_db.py.
+          README and baseline.md counts follow the two new tests.
+Evidence  python3 -m unittest discover -s scripts/tests -q -> 430 OK; the four golden
+          copies share one sha256 and all three CANONICAL_SHA256 pins match; the new
+          family-rule check fails on a mutated signature and passes on restore.
+Cost      The claim is now pinned by a guard, so both README sides must stay aligned on
+          the single-total wording; a rule change lands in four golden copies together.
+Commit    2f7ff0c
