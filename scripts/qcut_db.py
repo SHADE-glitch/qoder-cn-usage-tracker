@@ -1950,8 +1950,8 @@ def q_inventory(conn, kind=None):
 # input + output + cache read. Qoder's ``input_tokens`` already *contains* the
 # cached read (verified on this machine: adding cache read on top pushes a
 # single request past the model's 400k window), so this deliberately re-adds it
-# and lands at roughly twice the API total. It is shown *next to* the API total,
-# never instead of it. NULL when the API parts are missing; a row without cache
+# and lands at roughly twice the API total. It is the only total shown; the
+# stored API total was removed. NULL when the parts are missing; a row without cache
 # data contributes 0 (COALESCE) so it is neither inflated nor silently dropped
 # from the sum.
 _USAGE_TOTAL_EXPR = (

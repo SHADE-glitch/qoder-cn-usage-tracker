@@ -320,5 +320,30 @@ class ReadmeBilingualTest(unittest.TestCase):
             "the checker missed a break, invented one, or read a fenced example as a link")
 
 
+class OneTokenTotalTest(unittest.TestCase):
+    """Neither page may describe a second, rival token total.
+
+    The English page says the earlier API Total column is gone; the Chinese
+    page once still said the Usage Total sat "beside" it. A reader following
+    that sentence looks for a column that does not exist any more. Every line
+    that still names the API total must say it was retired.
+    """
+
+    RETIRED = ("gone", "removed", "no longer", "earlier", "was",
+               "撤", "移除", "不再", "原先", "旧", "之前")
+
+    def test_the_readmes_name_one_token_total(self):
+        for page in (EN, ZH):
+            text = read(page)
+            self.assertIn("Usage Total", text,
+                          f"{page.name} lost the single-total name")
+            for line in text.splitlines():
+                if "API Total" in line or "API total" in line:
+                    self.assertTrue(
+                        any(marker in line for marker in self.RETIRED),
+                        f"{page.name} names the API Total without saying it is "
+                        f"retired: {line}")
+
+
 if __name__ == "__main__":
     unittest.main()

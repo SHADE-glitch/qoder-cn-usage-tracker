@@ -86,7 +86,7 @@ Qoder CN 的 CLI 其实**已经写下了**你需要的数据——只是从不**
 
 `qcut` 是对 **`cbut`（[`codebuddy-usage-tracker`](https://github.com/SHADE-glitch/codebuddy-usage-tracker)）的刻意模仿**——后者是跟踪 CodeBuddy Code 的同族项目；`tcut` 是三兄弟中的另一个。同族形态来自 `cbut`：被动读取宿主已经写下的文件、同样顺序的八个标签槽、每标签独立的自然日窗口、以名字为键的「已安装 ∪ 用过」并集，以及两级下钻。
 
-它是模仿，**不是移植，也不以完全对齐为目标**。对象是 **Qoder CN CLI**，所以一个标签能显示什么，由 Qoder 的转录决定。`cbut` 的某个类别在 Qoder 里有字段支撑，qcut 就保留；没有的，就明确不做并说明原因，而不是编一个占位——单次请求耗时、HTTP 状态和金额在 Qoder 里都没有字段。反过来，`cbut` 没有而 Qoder 有的事实被保留并作为一等公民：与 token 并列的积分、区分「路由没上报 token」的 `—`/`-`、与 `API Total` 并列的 `Usage Total`，以及缓存读取 / 未命中 / 写入。「Qoder 到底记录了什么」才是问题；把界面做得和 cbut 一模一样不是。
+它是模仿，**不是移植，也不以完全对齐为目标**。对象是 **Qoder CN CLI**，所以一个标签能显示什么，由 Qoder 的转录决定。`cbut` 的某个类别在 Qoder 里有字段支撑，qcut 就保留；没有的，就明确不做并说明原因，而不是编一个占位——单次请求耗时、HTTP 状态和金额在 Qoder 里都没有字段。反过来，`cbut` 没有而 Qoder 有的事实被保留并作为一等公民：与 token 并列的积分、区分「路由没上报 token」的 `—`/`-`、只保留一个 token 总计 `Usage Total`（旧的 `API Total` 已从所有面板移除），以及缓存读取 / 未命中 / 写入。「Qoder 到底记录了什么」才是问题；把界面做得和 cbut 一模一样不是。
 
 ## 🏗️ 工作原理
 
@@ -286,7 +286,7 @@ name_cap = 28        # 表格渲染单元格的最宽字符数
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 428 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 430 tests ... OK
 ```
 
 测试套件是 `unittest`（`pytest` 也能发现它们）。其中两套需要安装 `textual`：`test_tui.py`，以及 `test_config.py`——后者的接线用例会把 TUI 模块加载起来，用以证明每个设置项真的到达渲染器。每个套件都在临时目录里自建一次性数据库**以及**一次性 Qoder 目录树——你真实的 `usage.db` 与 `~/.qoder-cn` 从不会被打开，仓库中也没有任何代码路径会访问网络。
@@ -294,7 +294,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 428 tests ... OK
 | 套件 | 用例数 | 覆盖范围 |
 |---|---:|---|
 | `test_sync.py` | 76 | 转录解析、归类（工具 / 技能 / 代理 / MCP，含直接以 `mcp__server__tool` 为工具名的形态）、路由来源、清单、增量与全量重建、被改写或结尾未换行的转录、带时间戳的状态配对、未认领记录统计、`model_calls` 只在真正插入时计数一次、Skill 结果自带的 `commandName` 不会被当成斜杠命令、生成的格式文档包含 token 捕获小节、schema 里**每一张表**的幂等性、sidechain 回复只经 Qoder 自己的 `parent_tool_use_id` 关联到发起它的 run、只解析 `compact_boundary` 的元数据而不碰其正文、读不了的转录会被报告并在下次重试、同样的记录被重写一次不会重复计数、只带一条 runtime-config 的会话仍然留住它的模型、一条记录里的两个技能算两次调用、更新的 schema 在每个入口都被拒绝、崩溃安全 |
-| `test_cross_repo_golden.py` | 17 | 跨仓 golden fixture：一组固定输入（NULL / 部分上报 / cache 列缺失的 token 行、不同 model 拼写、本地午夜与跨小时边界、2026 年两个美国夏令时切换日）经过本仓自己的 Usage Total 表达式、窗口聚合、模型 rollup、日期时间输入与自然日窗口，钉在与 cbut、ocut 共享的权威文件上 |
+| `test_cross_repo_golden.py` | 18 | 跨仓 golden fixture：一组固定输入（NULL / 部分上报 / cache 列缺失的 token 行、不同 model 拼写、本地午夜与跨小时边界、2026 年两个美国夏令时切换日）经过本仓自己的 Usage Total 表达式、窗口聚合、模型 rollup、日期时间输入与自然日窗口，钉在与 cbut、ocut 共享的权威文件上 |
 | `test_usage.py` | 74 | 自然日窗口、供应商标签、缓存命中率、全部查询辅助函数、「已安装 ∪ 用过」并集、区分真实测量与历史零值的 token 标记、按供应商与工具过滤的历史、斜杠命令排行、把「实体不存在」与「本窗口内没用过」分开的判定、只通过显式链接触发的 run 成本聚合、run 的 Usage Total 先按响应判定再求和、项目 / 会话 / 请求三级账本、压缩摘要及其上下文税、schema（含增量 v1→v2 迁移与 v3 的命令/技能/MCP 修复）、最小版的 snapshot→list→restore 往返、尚无数据库的全新安装、没有任何测试之外的调用方的查询，以及无头报表的措辞 |
 | `test_stats.py` | 59 | 无头 CLI 的端到端：每个子命令都真的调用 `main([...])`，`--db`、`--limit` 与 `--all`、只读连接、索引过期时的拒绝并指出修法、`export` / `inventory` / `recent` / `show` / `health`、`agents` 与 `projects` 账本（包括从未存在过的项目）、`commands` 报表、`env` 在开关设置与未设置两种情况下的输出、在临时库上跑 `vacuum`（快照、`quick_check`、行数不变）、损坏设置文件报成一句话而不是抛栈、`backup`/`restore` 这一对、`format --write` 只在标记之间重写并**拒绝**追加进丢了标记的文档、`show` 拒绝从没见过这个名字（而不是画成一片零）、索引真实覆盖的时间跨度，`--limit` 会说出它少给了多少行，以及入口脚本绝不碰它没被给过的路径 |
 | `test_snapshots.py` | 14 | 破坏性步骤的回退之路：快照在改动**之前**取、是在线备份而非把还在 `-wal` 里的主文件按字节拷贝、restore 保留它覆盖掉的状态、回收只删自己生成的文件，以及丢了偏移量的索引仍然值得一份快照 |
@@ -306,7 +306,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 428 tests ... OK
 | `test_maintenance_docs.py` | 11 | 生成的格式文档等于 `qcut format` 今天打印的内容、每个维护资产都能从路由文档抵达、每条链接都能解析，以及 CI 矩阵钉住的正是 `pyproject.toml` 声明的下限 |
 | `test_hermetic.py` | 14 | 让套件远离真实数据库和 Qoder 主机目录的绊线：受保护路径会被拒绝，临时路径可放行，子进程钩子端到端生效，要求子进程钉上 `QCUT_DB` 与 `QCUT_QODER_DIR`，以及加载器默认打开的那个设置文件同样受保护 |
 | `test_readme_counts.py` | 6 | 两份 README 里每一个用例数字——每行、每个总数——都等于从套件语法树上读下来的数量；盘上有套件却没有对应行，与行指向已删除的文件，同样判红 |
-| `test_readme_bilingual.py` | 9 | 两份 README 是同一份文档的两种语言：标题表情符号序列与其顺序必须一致，因此任何一侧单独增 / 删 / 移动小节都会判红；每条页内链接都指向真实标题；每份入库页面里的每个相对链接也都指向真实存在的东西，`#片段` 同样要落得到 |
+| `test_readme_bilingual.py` | 10 | 两份 README 是同一份文档的两种语言：标题表情符号序列与其顺序必须一致，因此任何一侧单独增 / 删 / 移动小节都会判红；每条页内链接都指向真实标题；每份入库页面里的每个相对链接也都指向真实存在的东西，`#片段` 同样要落得到 |
 | `test_record_coverage.py` | 6 | 改动生产脚本的提交必须在 `CHANGELOG.md` 里留下 `D-###` 条目；覆盖窗口从 `git log` 枚举而非手打，编号必须连续无缺，且每个被引用的哈希都要能解析 |
 | `test_conventions.py` | 9 | A 档根文件层是否在根目录齐备、AGENTS.md 是否用一行指明档位而不是抄规范正文，以及忽略清单覆盖的运行态是否真的没有被跟踪 |
 
@@ -322,7 +322,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-sync.py` | 转录解析器与增量索引器（`--full`、`--quiet`） |
 | `scripts/qcut-stats.py` | 无头报表 |
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
-| `scripts/tests/` | 上述 428 个用例 |
+| `scripts/tests/` | 上述 430 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |
