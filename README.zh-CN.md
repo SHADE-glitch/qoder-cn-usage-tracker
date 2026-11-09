@@ -216,9 +216,10 @@ python3 scripts/qcut-sync.py
 python3 scripts/qcut-stats.py stats
 ```
 
-### 🔄 可选：不开 TUI 也能保持索引新鲜
+### 🔄 定时同步（默认安装）
 
-[`systemd/`](systemd) 里有两个用户级单元。安装后每天执行一次 `qcut sync --quiet`：
+[`systemd/`](systemd) 里有两个用户级单元。`install.sh` 会装好并启用它们，
+让 `qcut sync --quiet` 每天执行一次。等价的手动步骤是：
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -324,7 +325,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
 | `scripts/qcut-tui.py` | 八标签 Textual UI |
 | `scripts/tests/` | 上述 430 个用例 |
 | `docs/maintenance/` | 自动生成的格式面与体积性能基线 |
-| `systemd/` | 可选的每日同步 service + timer |
+| `systemd/` | 每日同步 service + timer，由 `install.sh` 安装并启用 |
 | `requirements.txt` | `textual>=8.2,<9` —— 仅 TUI 需要；其余全部是标准库 |
 
 两条路径都可在沙箱安装中覆盖：启动器用 `QCUT_SCRIPTS` 与 `QCUT_VENV`，数据用 `QCUT_DB` 与 `QCUT_QODER_DIR`。
@@ -339,7 +340,7 @@ GitHub Actions 在每次 push 与 pull request 上跑同一条 discovery 命令�
   80×30 终端；更窄的终端会横向滚动弹窗，更矮的终端会纵向滚动。预设按钮是 cbut 的六个
   （`Today`、`1d`、`7d`、`14d`、`30d`、`All time`）；下拉框里额外的 2 天 / 3 天范围留在下拉框，
   仍可通过月历表达。选出的区间只属于当前标签，插件页始终保持全部时间。
-- 🔄 同步是手动的（或用可选的 systemd 定时器）；没有实时 hook。
+- 🔄 同步由 `install.sh` 装好的 systemd 定时器每天跑一次（也可手动）；没有实时 hook。
 
 ## 🧹 卸载
 

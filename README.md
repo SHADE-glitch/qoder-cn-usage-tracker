@@ -287,10 +287,10 @@ python3 scripts/qcut-sync.py
 python3 scripts/qcut-stats.py stats
 ```
 
-### 🔄 Optional: keep the index fresh without opening the TUI
+### 🔄 Scheduled sync (installed by default)
 
-Two user units ship in [`systemd/`](systemd). Installing them runs
-`qcut sync --quiet` once a day:
+Two user units ship in [`systemd/`](systemd). `install.sh` installs and enables
+them, so `qcut sync --quiet` runs once a day. The equivalent manual steps are:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -418,7 +418,7 @@ is 3.13, a middle version that speaks for neither.
 | `scripts/qcut-tui.py` | the eight-tab Textual UI |
 | `scripts/tests/` | the 430 tests above |
 | `docs/maintenance/` | the generated format surface and the size & performance baseline |
-| `systemd/` | optional daily sync service + timer |
+| `systemd/` | daily sync service + timer, installed and enabled by `install.sh` |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 
 Both paths are overridable for a sandboxed install: `QCUT_SCRIPTS` and
@@ -452,7 +452,7 @@ Both paths are overridable for a sandboxed install: `QCUT_SCRIPTS` and
   (`Today`, `1d`, `7d`, `14d`, `30d`, `All time`); the Select's extra 2- and 3-day
   ranges stay in the Select and are still expressible through the calendar. A picked
   range belongs to the active tab, and Plugins stays all-time.
-- 🔄 Sync is manual (or via the optional systemd timer); there is no live hook.
+- 🔄 Sync runs daily via the systemd timer installed by `install.sh` (or manually); there is no live hook.
 
 ## 🧹 Uninstall
 

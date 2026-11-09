@@ -72,7 +72,7 @@ This repository is private.
 
 ```bash
 python3 -m unittest discover -s scripts/tests     # stdlib unittest; pytest discovers them too
-./install.sh                                      # create .venv + link bin/qcut; optional systemd timer
+./install.sh                                      # create .venv + link bin/qcut; install+enable the systemd timer (--no-timer to skip)
 bash -n bin/qcut                                  # syntax-check the dispatcher
 ```
 
