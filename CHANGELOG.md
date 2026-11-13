@@ -890,4 +890,4 @@ Evidence  `python3 ~/.agents/scripts/render_standards.py --check .` reports the 
           repository's own guard and suite are green, and `bash ~/.agents/scripts/audit.sh` exits 0.
 Cost      `AGENTS.md` grows by about 10.5 KB, paid on every session read; the copy can drift, so the
           drift check is the only thing keeping it honest and it exists only on this machine.
-Commit    d701f64
+Commit    e3f8ee7
