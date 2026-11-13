@@ -856,13 +856,14 @@ Cost      The claim is now pinned by a guard, so both README sides must stay ali
           the single-total wording; a rule change lands in four golden copies together.
 Commit    2f7ff0c
 
-### D-043 · 2026-11-12 · docs
+### D-043 · 2026-11-12 · chore
 Symptom   The project-level rules pointer block in AGENTS.md used bare `@~/.agents/standards/...` imports to pull in the machine-wide standard. That only delivers the rule text to agents that expand `@` imports or read `opencode.json`; an agent that does neither holds the pointer and none of the rule text.
 Change    Replaced the two `@` imports with plain backticked absolute paths (`~/.agents/standards/STANDARD.md`, `~/.agents/standards/dimensions/<tier>.md`). The rule text is now delivered by the tool-neutral global behavior contract (GLOBAL.md) before the first edit, so the pointer works for every agent regardless of import expansion. No rule text was duplicated or changed — only the pointer form.
 Evidence  `python3 -m pytest scripts/tests/test_conventions.py -q` -> 9 passed (exit 0); the change sits inside the pointer block and does not touch heading counts or section structure.
 Cost      The pointer is a local copy of the instruction; the tool-neutral contract is what carries the rule text. Whether that text actually reaches a session is a per-tool check, not a repository guard.
 
 ---
+Commit    e5d715e
 
 ### D-044 · 2026-11-13 · chore
 
@@ -876,3 +877,4 @@ Evidence  `python3 scripts/tests/test_conventions.py` exits 0; `bash ~/.agents/s
           repositories pass the layout check).
 Cost      No per-assistant config remains, so an agent that ignores the pointer is undetected by any
           local guard; that was already true of the file it replaced.
+Commit    f9486db
