@@ -13,17 +13,9 @@
 
 **解决什么** —— Qoder CN CLI 每个会话、每次子代理运行各写一个转录文件；`qcut` 把它们归并进一个本地 SQLite 文件，让用量、token 与积分一目了然——并分清「真实的零」与「路由根本没上报 token」。
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Qoder CN 记录器依次切过八个标签页，途中打开一条技能记录" width="1100"></p>
 
-<p align="center"><em><b>仪表盘</b> —— Qoder CN CLI 的用量一个窗口看完：工具、skill、agent、插件、MCP 调用，以及各自的 token 与额度。演示索引，不含真实机器数据。</em></p>
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Qoder CN 用量索引的八种切法；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
-
-<p align="center"><img src="docs/screenshots/demo-range.gif" alt="把时间范围从 30 天切到 7 天，再切到 1 天" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b> 仪表盘从 30 天窗口切到 7 天、再切到 1 天，请求日志与模型表随之收窄。 <b>展示的功能：</b> 顶栏重算这一份 Qoder CN 索引的时间范围，其他标签页仍保留各自的窗口。</em></p>
+<p align="center"><em><b>动图内容：</b>看板从仪表盘进入，依次切过工具、技能、代理、插件、MCP、Token、用量七页；在技能页按 <code>Enter</code> 打开光标所在行，<code>Esc</code> 返回。<b>展示的功能：</b>单个索引的全景——请求与额度、token 与缓存总量、模型与工具排行，以及每个技能的调用次数、成功率与最后使用时间。画面里的索引是为录制造的合成数据。</em></p>
 
 **怎么跑** —— `./install.sh`，然后 `qcut sync`。
 
